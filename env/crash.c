@@ -34,10 +34,12 @@ check_one (size_t n, int torn, const char *img, const char *fsck_out,
   int status;
 
   jt_build_image (n, torn, img);
-  status = jt_run ("e2fsck -fy %s >%s 2>&1", img, fsck_out);
+  /* Only replay the journal: e2fsck -fy would also repair what it
+     finds, and the check after it would not see it.  */
+  status = jt_run ("e2fsck -E journal_only -y %s >%s 2>&1", img, fsck_out);
   if (status & ~1)
     {
-      snprintf (msg, sizeof msg, "e2fsck -fy exit %d", status);
+      snprintf (msg, sizeof msg, "e2fsck -E journal_only exit %d", status);
       return msg;
     }
   status = jt_run ("e2fsck -fn %s >%s 2>&1", img, fsck_out);
@@ -76,8 +78,9 @@ worker (const char *name, int w, int jobs, const size_t *points,
 	  snprintf (keep, sizeof keep, "build/%s-crash-%zu%s.img", name, n,
 		    torn ? "-torn" : "");
 	  jt_build_image (n, torn, keep);
-	  jt_run ("cp %s %s.replayed && e2fsck -fy %s.replayed >%s.fsck 2>&1",
-		  keep, keep, keep, keep);
+	  jt_run ("cp %s %s.replayed && e2fsck -E journal_only -y %s.replayed "
+		  ">%s.fsck 2>&1 && e2fsck -fn %s.replayed >>%s.fsck 2>&1",
+		  keep, keep, keep, keep, keep, keep);
 	  strcpy (keep + strlen (keep) - 4, ".log");
 	  FILE *f = fopen (keep, "w");
 	  if (f)

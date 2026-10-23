@@ -133,8 +133,9 @@ typedef const char *(*jt_crash_check_fn) (size_t n, int torn,
 					  const char *img, void *arg);
 
 /* For crash points spread over the write log, each also with its last
-   write torn: rebuild the image, replay it with e2fsck -fy, require
-   e2fsck -fn to find it clean, then call CHECK.  JT_CRASH_POINTS sets how
+   write torn: rebuild the image, replay its journal (e2fsck -E
+   journal_only, which repairs nothing), require e2fsck -fn to find it
+   clean, then call CHECK.  JT_CRASH_POINTS sets how
    many points (default 300, 0 for every one); JT_JOBS how many run at
    once (default: one per CPU); JT_TMP where the images go (default
    /dev/shm); JT_NO_CRASH skips the checks.  On the first failure, reports it, keeps the crashed image
