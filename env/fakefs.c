@@ -42,6 +42,7 @@ static struct store fake_store;
 struct store *store = &fake_store;
 
 void (*jt_on_release) (block_t start, unsigned long count);
+void (*jt_store_write_hook) (uint64_t off, size_t len);
 
 static int jt_flags;
 static unsigned long jt_warnings;
@@ -161,6 +162,8 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
 
   if (off + len > store_bytes)
     return EIO;
+  if (jt_store_write_hook)
+    jt_store_write_hook (off, len);
   pthread_mutex_lock (&log_lock);
   memcpy (store_mem + off, buf, len);
   log_append (off, buf, len);

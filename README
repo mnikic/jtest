@@ -39,6 +39,11 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                t_dirs: directory blocks through the file pager, with
                journal_*_external, reservations given up, and syncs and
                evictions in the middle of an edit.
+               t_notify_race: forces a pager home write to race a
+               reservation in a draining (T_LOCKED) transaction, holding
+               the write in store_write (jt_store_write_hook) and waiting
+               for the state through env/journal_peek.c, which compiles
+               journal.c with accessors to its internals.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.

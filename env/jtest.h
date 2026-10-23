@@ -135,6 +135,13 @@ void jt_save_image (const char *path);
 /* Run CMD through the shell and return its exit status.  */
 int jt_run (const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
 
+/* Whether TXN is draining for a commit (T_LOCKED).  */
+int jt_txn_locked (diskfs_transaction_t *txn);
+
+/* Called before every store_write of LEN bytes at byte offset OFF, if
+   set, outside the journal lock.  Tests use it to hold a write.  */
+extern void (*jt_store_write_hook) (uint64_t off, size_t len);
+
 /* Called with every range the journal hands back to the allocator, if
    set.  */
 extern void (*jt_on_release) (block_t start, unsigned long count);

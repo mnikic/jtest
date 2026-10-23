@@ -35,8 +35,12 @@ all: $(TESTS) $(B)/base.img
 $(B):
 	mkdir -p $@
 
-$(B)/journal.o: $(JOURNAL_C) $(HURD)/ext2fs/journal.h | $(B)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+# journal.c through env/journal_peek.c, which includes it and adds
+# accessors for the tests.
+$(B)/journal.o: env/journal_peek.c $(JOURNAL_C) $(HURD)/ext2fs/journal.h \
+		env/jtest.h | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DJT_JOURNAL_C='"$(abspath $(JOURNAL_C))"' \
+	  -c -o $@ $<
 
 $(B)/ihash.o: $(HURD)/libihash/ihash.c | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
