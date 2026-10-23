@@ -68,6 +68,14 @@ void jt_dir_edit (block_t b, size_t off, const void *data, size_t len);
 void jt_dir_read (block_t b, void *out);
 void jt_dir_pageout (block_t b, int evict, int wait);
 
+/* Drop block B's page from the file pager (FILE_PAGER 1), as truncating
+   the file does, or from the disk cache (0), as ext2_new_block clearing
+   its modified_global_blocks bit does: it is no longer written out, and
+   its next page-in reads what is on disk.  A truncation waits for a
+   write of the page in flight; the disk pager's goes on.  For a block
+   that changes owner.  */
+void jt_discard (block_t b, int file_pager);
+
 /* journal_mark_dirty_external of directory block B, as the file pager's
    mapping has it.  */
 error_t jt_dir_mark_dirty (diskfs_transaction_t *txn, block_t b);

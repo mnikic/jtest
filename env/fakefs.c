@@ -134,6 +134,7 @@ static char *store_base;	/* The image as loaded.  */
 static size_t store_bytes;
 
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned write_delay_us;	/* JT_WRITE_DELAY: up to this long.  */
 static struct jt_write *log_entries;
 static size_t log_n, log_alloc;
 
@@ -165,6 +166,15 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
     return EIO;
   if (jt_store_write_hook)
     jt_store_write_hook (off, len);
+  if (write_delay_us)
+    {
+      /* A write in flight for a while, as on a real disk, so that
+	 others can overtake it.  */
+      static __thread unsigned seed;
+      if (!seed)
+	seed = (unsigned) (uintptr_t) &seed;
+      usleep (rand_r (&seed) % write_delay_us);
+    }
   pthread_mutex_lock (&log_lock);
   memcpy (store_mem + off, buf, len);
   log_append (off, buf, len);
@@ -412,6 +422,9 @@ struct cache
   /* As libpager's PM_PAGINGOUT and PM_PAGEINWAIT: a block being written
      out, and one whose page-in waits for that write to supply it.  */
   unsigned char *paging_out, *pagein_wait;
+  /* Discarded for a new owner: what the slot holds is no one's, and
+     the next page-in is not checked against it.  */
+  unsigned char *discarded;
 };
 
 static struct cache dcache = { .name = "disk cache", .disk_cache = 1 };
@@ -472,6 +485,7 @@ cache_init (struct cache *c, char *mem, size_t nblocks)
   c->paging_in = calloc (nblocks, 1);
   c->paging_out = calloc (nblocks, 1);
   c->pagein_wait = calloc (nblocks, 1);
+  c->discarded = calloc (nblocks, 1);
 }
 
 /* Queue a request; with WAIT, wait for it and free it.  */
@@ -593,7 +607,9 @@ serve_pagein (struct cache *c, block_t b)
      block: the journal must return exactly that.  */
   if (!c->disk_cache)
     jt_trace (b, "page-in: journal returned", buf);
-  if (memcmp (buf, cslot (c, b), block_size))
+  if (c->discarded[b])
+    c->discarded[b] = 0;
+  else if (memcmp (buf, cslot (c, b), block_size))
     {
       stale_reads++;
       ext2_warning ("jtest: STALE %s page-in of block %u", c->name, b);
@@ -721,6 +737,24 @@ jt_pageout (block_t b, int evict, int wait)
 }
 
 void
+jt_discard (block_t b, int file_pager)
+{
+  struct cache *c = file_pager ? &dirpager : &dcache;
+
+  pthread_mutex_lock (&page_lock);
+  /* Truncation waits for the file's pages being written; the disk
+     pager's write in flight goes on.  */
+  while (file_pager && c->paging_out[b])
+    pthread_cond_wait (&page_out_done, &page_lock);
+  c->dirty[b] = 0;
+  c->resident[b] = 0;
+  c->discarded[b] = 1;
+  if (file_pager)
+    jt_trace (b, "discarded", NULL);
+  pthread_mutex_unlock (&page_lock);
+}
+
+void
 jt_dir_edit (block_t b, size_t off, const void *data, size_t len)
 {
   cache_edit (&dirpager, b, off, data, len);
@@ -759,8 +793,13 @@ sync_cache (struct cache *c)
   block_t n = jt_nblocks ();
 
   for (block_t b = 0; b < n; b++)
-    if (c->dirty[b])
-      submit (REQ_CLEAN, c, b, 0);
+    {
+      pthread_mutex_lock (&page_lock);
+      int d = c->dirty[b];
+      pthread_mutex_unlock (&page_lock);
+      if (d)
+	submit (REQ_CLEAN, c, b, 0);
+    }
   jt_drain ();
 }
 
@@ -986,6 +1025,8 @@ jt_mount (const char *image, int npagers, int flags)
   block_t nblocks;
 
   jt_flags = flags;
+  if (getenv ("JT_WRITE_DELAY"))
+    write_delay_us = atoi (getenv ("JT_WRITE_DELAY"));
   load_image (image);
 
   sb = (struct ext2_super_block *) (store_mem + SBLOCK_OFFS);
