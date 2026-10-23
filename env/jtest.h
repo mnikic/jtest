@@ -138,9 +138,17 @@ int jt_run (const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
 /* Whether TXN is draining for a commit (T_LOCKED).  */
 int jt_txn_locked (diskfs_transaction_t *txn);
 
+/* Copy the shadow of block B in TXN to OUT.  ENOENT if TXN does not
+   hold B.  */
+int jt_shadow (diskfs_transaction_t *txn, block_t b, void *out);
+
 /* Called before every store_write of LEN bytes at byte offset OFF, if
    set, outside the journal lock.  Tests use it to hold a write.  */
 extern void (*jt_store_write_hook) (uint64_t off, size_t len);
+
+/* Called on every disk_cache_block_ref_mapped of block B, if set: the
+   stop-time sweep calls it, unlocked, right before it copies B.  */
+extern void (*jt_ref_mapped_hook) (block_t b);
 
 /* Called with every range the journal hands back to the allocator, if
    set.  */

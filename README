@@ -44,6 +44,9 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                the write in store_write (jt_store_write_hook) and waiting
                for the state through env/journal_peek.c, which compiles
                journal.c with accessors to its internals.
+               t_sweep_race: holds the stop-time sweep right before it
+               copies a block, has a joining handle half-edit the block,
+               and checks the torn copy is redone before commit.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.
@@ -71,9 +74,10 @@ On a stale page-in, the harness prints the block's last events (edits,
 page-outs, page-ins, reservations, marks; jt_trace adds more).
 
 Known TSan report: the stop-time sweep copies a disk-cache block while
-a thread that joined during the unlocked sweep edits it.  The copy is
-redone before commit (the editor re-arms needs_copy), so it is benign,
-but it is a data race.
+a thread that joined during the unlocked sweep edits it.  The torn copy
+never commits: the editor's journal_get_write_access and
+journal_mark_dirty each set needs_copy again, and the last handle to
+stop sweeps again.  t_sweep_race forces it and checks that.
 
 What is not modelled: file data, the allocator and busy blocks beyond a callback, pages larger
 than a block, and anything above the journal API.  Test images are

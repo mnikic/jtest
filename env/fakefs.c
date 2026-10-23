@@ -43,6 +43,7 @@ struct store *store = &fake_store;
 
 void (*jt_on_release) (block_t start, unsigned long count);
 void (*jt_store_write_hook) (uint64_t off, size_t len);
+void (*jt_ref_mapped_hook) (block_t b);
 
 static int jt_flags;
 static unsigned long jt_warnings;
@@ -791,6 +792,8 @@ jt_stale_reads (void)
 void *
 disk_cache_block_ref_mapped (block_t block)
 {
+  if (jt_ref_mapped_hook)
+    jt_ref_mapped_hook (block);
   return slot (block);
 }
 
