@@ -80,6 +80,11 @@ void jt_discard (block_t b, int file_pager);
    mapping has it.  */
 error_t jt_dir_mark_dirty (diskfs_transaction_t *txn, block_t b);
 
+/* Run FN (ARG) on a pager thread and wait for it, as a fault waits for
+   pager_unlock_page: the thread is marked as a pager thread
+   (journal_thread_set_pager), so a transaction FN starts never waits.  */
+void jt_pager_call (void (*fn) (void *), void *arg);
+
 /* Write out every dirty block of the directory pager and the disk cache
    and wait, as diskfs_sync_everything does.  */
 void jt_sync_all (void);

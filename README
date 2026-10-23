@@ -60,6 +60,12 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                t_free_only: transactions whose only change is a free must
                commit, on a commit and at the unmount: revoke records
                logged, blocks handed back.
+               t_pager_txn: pager threads that start transactions, as
+               pager_unlock_page does for a fault from an RPC thread that
+               holds a handle: the pager joins a draining transaction,
+               journal_wait_freed_blocks never waits on it, and its
+               blocks land in the faulting operation's transaction.  A
+               watchdog turns a deadlock into a failure.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.
@@ -93,6 +99,9 @@ a thread that joined during the unlocked sweep edits it.  The torn copy
 never commits: the editor's journal_get_write_access and
 journal_mark_dirty each set needs_copy again, and the last handle to
 stop sweeps again.  t_sweep_race forces it and checks that.
+
+jt_pager_call runs a callback on a pager thread, for the pager
+callbacks that start transactions.
 
 What is not modelled: the allocator's bitmaps (t_alloc models only its
 busy rule), pages larger

@@ -435,12 +435,14 @@ static pthread_cond_t page_in_done = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t page_out_done = PTHREAD_COND_INITIALIZER;
 static unsigned long stale_reads;
 
-enum req_kind { REQ_CLEAN, REQ_EVICT, REQ_PAGEIN, REQ_EXIT };
+enum req_kind { REQ_CLEAN, REQ_EVICT, REQ_PAGEIN, REQ_CALL, REQ_EXIT };
 
 struct req
 {
   enum req_kind kind;
   struct cache *cache;
+  void (*fn) (void *);		/* REQ_CALL.  */
+  void *arg;
   block_t block;
   int wait;
   int done;
@@ -662,6 +664,9 @@ pager_thread (void *arg)
 	case REQ_PAGEIN:
 	  serve_pagein (r->cache, r->block);
 	  break;
+	case REQ_CALL:
+	  r->fn (r->arg);
+	  break;
 	case REQ_EXIT:
 	  break;
 	}
@@ -752,6 +757,26 @@ jt_discard (block_t b, int file_pager)
   if (file_pager)
     jt_trace (b, "discarded", NULL);
   pthread_mutex_unlock (&page_lock);
+}
+
+void
+jt_pager_call (void (*fn) (void *), void *arg)
+{
+  struct req *r = calloc (1, sizeof *r);
+
+  r->kind = REQ_CALL;
+  r->fn = fn;
+  r->arg = arg;
+  r->wait = 1;
+  pthread_mutex_lock (&req_lock);
+  in_flight++;
+  *req_tail = r;
+  req_tail = &r->next;
+  pthread_cond_signal (&req_ready);
+  while (!r->done)
+    pthread_cond_wait (&req_done, &req_lock);
+  free (r);
+  pthread_mutex_unlock (&req_lock);
 }
 
 void
