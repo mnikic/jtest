@@ -1,0 +1,9 @@
+-xc
+-std=gnu11
+-D_GNU_SOURCE
+-Ishim
+-Ienv
+-I../cross-hurd/src/hurd
+-I../cross-hurd/src/hurd/libshouldbeinlibc
+-I../cross-hurd/src/hurd/libports
+-I../cross-hurd/src/hurd/ext2fs

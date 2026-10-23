@@ -1,0 +1,40 @@
+jtest: the ext2fs journal on a Linux host
+=========================================
+
+Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
+../cross-hurd/src/hurd), unchanged, and runs it against a fake ext2fs:
+
+  shim/        A fake Mach and the <hurd/...> types the real Hurd lib
+               headers need.  libdiskfs, libports, libstore, libihash and
+               ext2fs headers are the real ones, so struct node, struct
+               store, diskfs_transaction_t are what ext2fs sees.
+  env/         The fake ext2fs (fakefs.c) and the harness API (jtest.h):
+               - the store is the image in memory, and every write and
+                 sync also goes to a write log;
+               - the disk cache maps every block; blocks are resident or
+                 evicted, and tests edit them with jt_edit, which faults
+                 an evicted block back in;
+               - pager threads serve clean/evict page-outs through
+                 journal_store_write and page-ins through
+                 journal_store_read; a page-in must return exactly the
+                 bytes that were evicted, or it counts as a stale read.
+  tests/       t_basic: many transactions under page-outs and evictions,
+               clean unmount, every block home, e2fsck -fn clean.
+               t_crash: rebuilds the image after every prefix of the write
+               log (and with the last write torn), replays it with the
+               real e2fsck -fy, then checks e2fsck -fn is clean and the
+               blocks hold exactly the state of one commit, no older than
+               the last commit that had returned.
+
+  make check                      build everything and run the tests
+  make check SAN=address,undefined
+  make check SAN=thread
+  JT_CRASH_POINTS=0 build/t_crash # every crash point (default: 300)
+
+A test's stderr (journal warnings, statistics, the flight recorder dump)
+goes to build/t_NAME.log.  Needs gcc and e2fsprogs on the host.
+
+What is not modelled: the file pagers (journal_*_external, directory
+blocks), the allocator and busy blocks beyond a callback, pages larger
+than a block, and anything above the journal API.  Test images are
+mke2fs -t ext3 (indirect-mapped journal inode, no extents).
