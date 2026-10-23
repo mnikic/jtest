@@ -57,6 +57,9 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                freed block's old copy while the block's next owner
                commits; journal_forget_freed_blocks must have retired
                that copy when the free committed.
+               t_free_only: transactions whose only change is a free must
+               commit, on a commit and at the unmount: revoke records
+               logged, blocks handed back.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.
