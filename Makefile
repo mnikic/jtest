@@ -6,8 +6,11 @@
 #   make check SAN=address,undefined
 #   make check SAN=thread
 #   make HURD=/path/to/hurd
+#   make check JOURNAL_C=patched/journal.c
 
 HURD ?= ../cross-hurd/src/hurd
+# The journal under test; point it at a patched copy to try a change.
+JOURNAL_C ?= $(HURD)/ext2fs/journal.c
 
 CC ?= gcc
 CFLAGS ?= -O1 -g -fno-omit-frame-pointer
@@ -24,7 +27,7 @@ LDFLAGS += -fsanitize=$(SAN)
 endif
 
 B = build
-ENV = $(B)/journal.o $(B)/ihash.o $(B)/fakefs.o
+ENV = $(B)/journal.o $(B)/ihash.o $(B)/fakefs.o $(B)/crash.o
 TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_*.c))
 
 all: $(TESTS) $(B)/base.img
@@ -32,13 +35,16 @@ all: $(TESTS) $(B)/base.img
 $(B):
 	mkdir -p $@
 
-$(B)/journal.o: $(HURD)/ext2fs/journal.c $(HURD)/ext2fs/journal.h | $(B)
+$(B)/journal.o: $(JOURNAL_C) $(HURD)/ext2fs/journal.h | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(B)/ihash.o: $(HURD)/libihash/ihash.c | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(B)/fakefs.o: env/fakefs.c env/jtest.h | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(B)/crash.o: env/crash.c env/jtest.h | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(B)/t_%: tests/t_%.c tests/common.h $(ENV)

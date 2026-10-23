@@ -21,6 +21,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include "ext2fs.h"
 #include "journal.h"
 
@@ -80,10 +81,34 @@ struct jt_write
 size_t jt_log_count (void);
 const struct jt_write *jt_log_entry (size_t i);
 
+/* Print log entries FROM to TO, decoded: syncs, log blocks (JBD2
+   headers, descriptor tags) and home writes (their first two words, which
+   for the tests' blocks are the block number and version).  */
+void jt_dump_log (FILE *f, size_t from, size_t to);
+
 /* Write the image as it was after the first N log entries to PATH: the
    image as loaded plus those writes.  With TORN, the Nth write only
    reaches the disk for its first half.  */
 void jt_build_image (size_t n, int torn, const char *path);
+
+/* Whether byte offset OFF of the store is in the journal's blocks.  */
+int jt_in_journal (uint64_t off);
+
+/* Checks the image IMG that a crash after the first N log entries leaves
+   (with the last one torn if TORN), once e2fsck has replayed it.  Returns
+   NULL if it is right, or what is wrong.  */
+typedef const char *(*jt_crash_check_fn) (size_t n, int torn,
+					  const char *img, void *arg);
+
+/* For crash points spread over the write log, each also with its last
+   write torn: rebuild the image, replay it with e2fsck -fy, require
+   e2fsck -fn to find it clean, then call CHECK.  JT_CRASH_POINTS sets how
+   many points (default 300, 0 for every one); JT_JOBS how many run at
+   once (default: one per CPU); JT_TMP where the images go (default
+   /dev/shm); JT_NO_CRASH skips the checks.  On the first failure, reports it, keeps the crashed image
+   as build/NAME-crash-N.img and exits.  Returns the number of images
+   checked.  Call it after jt_umount or jt_abandon.  */
+size_t jt_crash_check (const char *name, jt_crash_check_fn check, void *arg);
 
 /* Write the current store to PATH.  */
 void jt_save_image (const char *path);

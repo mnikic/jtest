@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -12,6 +13,7 @@
 #include <unistd.h>
 
 #include "jtest.h"
+#include "jbd2_format.h"
 
 /* ---------------------------------------------------------------- */
 /* ext2fs and libdiskfs globals that journal.c uses.  */
@@ -121,6 +123,10 @@ vm_deallocate (task_t task, vm_address_t addr, vm_size_t size)
 /* ---------------------------------------------------------------- */
 /* The store: the image in memory, and the log of writes to it.  */
 
+static block_t *jnode_map;
+static size_t jnode_map_len;
+static unsigned char *in_journal;	/* By block.  */
+
 static char *store_mem;		/* The "disk".  */
 static char *store_base;	/* The image as loaded.  */
 static size_t store_bytes;
@@ -214,6 +220,71 @@ jt_disk_block (block_t b)
   return store_mem + ((size_t) b << log2_block_size);
 }
 
+void
+jt_dump_log (FILE *f, size_t from, size_t to)
+{
+  if (to > log_n)
+    to = log_n;
+  for (size_t i = from; i < to; i++)
+    {
+      const struct jt_write *w = &log_entries[i];
+      block_t b = w->off >> log2_block_size;
+      const uint32_t *d = w->data;
+
+      if (!d)
+	{
+	  fprintf (f, "%6zu  sync\n", i);
+	  continue;
+	}
+      fprintf (f, "%6zu  block %6u", i, b);
+      if (w->len != block_size || w->off % block_size)
+	fprintf (f, " +%" PRIu64 " len %zu", w->off % block_size, w->len);
+      if (in_journal && in_journal[b])
+	{
+	  size_t j = 0;
+	  while (jnode_map[j] != b)
+	    j++;
+	  fprintf (f, "  log %4zu", j);
+	  if (be32toh (d[0]) == JBD2_MAGIC_NUMBER)
+	    {
+	      static const char *const types[] =
+		{ "?", "descriptor", "commit", "sb v1", "sb v2", "revoke" };
+	      uint32_t t = be32toh (d[1]);
+	      fprintf (f, "  %s", t < 6 ? types[t] : "?");
+	      if (t == JBD2_SUPERBLOCK_V1 || t == JBD2_SUPERBLOCK_V2)
+		{
+		  const journal_superblock_t *sb = w->data;
+		  fprintf (f, " s_sequence %u s_start %u",
+			   be32toh (sb->s_sequence), be32toh (sb->s_start));
+		}
+	      else
+		fprintf (f, " tid %u", be32toh (d[2]));
+	      if (t == JBD2_DESCRIPTOR_BLOCK)
+		{
+		  const journal_block_tag_t *tag
+		    = (const void *) ((const char *) d + sizeof (journal_header_t));
+		  fprintf (f, " ->");
+		  for (; (const char *) (tag + 1) <= (const char *) d + block_size;
+	       tag++)
+		    {
+		      uint32_t flags = be32toh (tag->t_flags);
+		      fprintf (f, " %u", be32toh (tag->t_blocknr));
+		      if (!(flags & JBD2_FLAG_SAME_UUID))
+			tag = (const void *) ((const char *) tag + 16);
+		      if (flags & JBD2_FLAG_LAST_TAG)
+			break;
+		    }
+		}
+	    }
+	  else
+	    fprintf (f, "  data %08x %08x", d[0], d[1]);
+	}
+      else
+	fprintf (f, "  home %08x %08x", d[0], d[1]);
+      fputc ('\n', f);
+    }
+}
+
 static void
 write_file (const char *path, const char *data, size_t len)
 {
@@ -265,6 +336,10 @@ jt_save_image (const char *path)
 static pthread_mutex_t page_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t page_in_done = PTHREAD_COND_INITIALIZER;
 static unsigned char *resident, *dirty, *paging_in;
+/* As libpager's PM_PAGINGOUT and PM_PAGEINWAIT: a block being written
+   out, and one whose page-in waits for that write to supply it.  */
+static unsigned char *paging_out, *pagein_wait;
+static pthread_cond_t page_out_done = PTHREAD_COND_INITIALIZER;
 static unsigned long stale_reads;
 
 enum req_kind { REQ_CLEAN, REQ_EVICT, REQ_PAGEIN, REQ_EXIT };
@@ -327,6 +402,9 @@ submit (enum req_kind kind, block_t b, int wait)
   pthread_mutex_unlock (&req_lock);
 }
 
+/* Like libpager's data-return: writes of a block are serialized, and a
+   page-in that comes while the block is being written out waits, and
+   gets the data being written.  */
 static void
 serve_pageout (block_t b, int evict)
 {
@@ -335,6 +413,8 @@ serve_pageout (block_t b, int evict)
   error_t err;
 
   pthread_mutex_lock (&page_lock);
+  while (paging_out[b])
+    pthread_cond_wait (&page_out_done, &page_lock);
   if (!resident[b] || !dirty[b])
     {
       /* Mach drops a clean page without writing it.  */
@@ -348,6 +428,7 @@ serve_pageout (block_t b, int evict)
   dirty[b] = 0;
   if (evict)
     resident[b] = 0;
+  paging_out[b] = 1;
   pthread_mutex_unlock (&page_lock);
 
   keeps_page = !evict;
@@ -355,6 +436,19 @@ serve_pageout (block_t b, int evict)
   if (err || amount != block_size)
     ext2_warning ("jtest: page-out of block %u failed: %s", b,
 		  strerror (err ? err : EIO));
+
+  pthread_mutex_lock (&page_lock);
+  paging_out[b] = 0;
+  if (pagein_wait[b])
+    {
+      /* memory_object_data_supply of what was written.  */
+      memcpy (slot (b), buf, block_size);
+      resident[b] = 1;
+      pagein_wait[b] = 0;
+      pthread_cond_broadcast (&page_in_done);
+    }
+  pthread_cond_broadcast (&page_out_done);
+  pthread_mutex_unlock (&page_lock);
   free (buf);
 }
 
@@ -366,8 +460,15 @@ serve_pagein (block_t b)
   error_t err;
 
   pthread_mutex_lock (&page_lock);
-  if (resident[b] || paging_in[b])
+  if (resident[b] || paging_in[b] || pagein_wait[b])
     {
+      pthread_mutex_unlock (&page_lock);
+      return;
+    }
+  if (paging_out[b])
+    {
+      /* The write will supply it.  */
+      pagein_wait[b] = 1;
       pthread_mutex_unlock (&page_lock);
       return;
     }
@@ -451,7 +552,7 @@ fault_locked (block_t b)
 {
   while (!resident[b])
     {
-      if (!paging_in[b])
+      if (!paging_in[b] && !pagein_wait[b])
 	{
 	  pthread_mutex_unlock (&page_lock);
 	  submit (REQ_PAGEIN, b, 1);
@@ -555,8 +656,6 @@ ext2_release_busy_blocks (block_t block, unsigned long count)
     jt_on_release (block, count);
 }
 
-static block_t *jnode_map;
-static size_t jnode_map_len;
 static struct node *jnode;
 static int jnode_refs;
 
@@ -668,6 +767,16 @@ load_journal_inode (void)
   for (int d = 0; d < 3; d++)
     if (di->i_block[EXT2_IND_BLOCK + d])
       map_indirect (le32toh (di->i_block[EXT2_IND_BLOCK + d]), d);
+
+  in_journal = calloc (store_bytes >> log2_block_size, 1);
+  for (size_t i = 0; i < jnode_map_len; i++)
+    in_journal[jnode_map[i]] = 1;
+}
+
+int
+jt_in_journal (uint64_t off)
+{
+  return in_journal[off >> log2_block_size];
 }
 
 static void
@@ -735,6 +844,8 @@ jt_mount (const char *image, int npagers, int flags)
   memset (resident, 1, nblocks);
   dirty = calloc (nblocks, 1);
   paging_in = calloc (nblocks, 1);
+  paging_out = calloc (nblocks, 1);
+  pagein_wait = calloc (nblocks, 1);
 
   sblock = (struct ext2_super_block *) (slot (boffs_block (SBLOCK_OFFS))
 					+ SBLOCK_OFFS % block_size);
