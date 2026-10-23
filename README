@@ -53,6 +53,10 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                none is free, and blocks reused as metadata and as file
                data.  An old journal copy of a block must never be
                replayed or checkpointed over its new owner.
+               t_forget_race: holds kjournald's checkpoint write of a
+               freed block's old copy while the block's next owner
+               commits; journal_forget_freed_blocks must have retired
+               that copy when the free committed.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.

@@ -32,3 +32,19 @@ jt_shadow (diskfs_transaction_t *txn, block_t b, void *out)
   JOURNAL_UNLOCK (ext2_journal);
   return jb ? 0 : ENOENT;
 }
+
+int
+jt_checkpoint_unwritten (block_t b)
+{
+  int unwritten = 0;
+
+  JOURNAL_LOCK (ext2_journal);
+  for (diskfs_transaction_t *txn = ext2_journal->j_checkpoint_list;
+       txn && !unwritten; txn = txn->t_checkpoint_next)
+    {
+      journal_buffer_t *jb = journal_map_lookup (&txn->t_buffer_map, b);
+      unwritten = jb && !jb->jb_is_written;
+    }
+  JOURNAL_UNLOCK (ext2_journal);
+  return unwritten;
+}

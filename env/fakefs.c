@@ -42,7 +42,7 @@ static struct store fake_store;
 struct store *store = &fake_store;
 
 void (*jt_on_release) (block_t start, unsigned long count);
-void (*jt_store_write_hook) (uint64_t off, size_t len);
+void (*jt_store_write_hook) (uint64_t off, size_t len, const void *buf);
 void (*jt_ref_mapped_hook) (block_t b);
 
 static int jt_flags;
@@ -165,7 +165,7 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
   if (off + len > store_bytes)
     return EIO;
   if (jt_store_write_hook)
-    jt_store_write_hook (off, len);
+    jt_store_write_hook (off, len, buf);
   if (write_delay_us)
     {
       /* A write in flight for a while, as on a real disk, so that

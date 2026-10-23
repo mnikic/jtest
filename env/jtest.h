@@ -150,9 +150,14 @@ int jt_txn_locked (diskfs_transaction_t *txn);
    hold B.  */
 int jt_shadow (diskfs_transaction_t *txn, block_t b, void *out);
 
-/* Called before every store_write of LEN bytes at byte offset OFF, if
-   set, outside the journal lock.  Tests use it to hold a write.  */
-extern void (*jt_store_write_hook) (uint64_t off, size_t len);
+/* Called before every store_write of LEN bytes from BUF at byte offset
+   OFF, if set, outside the journal lock.  Tests use it to hold a write.  */
+extern void (*jt_store_write_hook) (uint64_t off, size_t len,
+				    const void *buf);
+
+/* Whether a transaction in the checkpoint list still has to write block
+   B home: a buffer for B not marked written.  */
+int jt_checkpoint_unwritten (block_t b);
 
 /* Called on every disk_cache_block_ref_mapped of block B, if set: the
    stop-time sweep calls it, unlocked, right before it copies B.  */

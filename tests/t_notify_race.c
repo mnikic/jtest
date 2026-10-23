@@ -32,10 +32,11 @@ static pthread_cond_t hold_cond = PTHREAD_COND_INITIALIZER;
 static int hold_armed, hold_reached, hold_released;
 
 static void
-hold_hook (uint64_t off, size_t len)
+hold_hook (uint64_t off, size_t len, const void *data)
 {
   uint64_t start = (uint64_t) dir << log2_block_size;
 
+  (void) data;
   if (off + len <= start || off >= start + block_size)
     return;
   pthread_mutex_lock (&hold_lock);
