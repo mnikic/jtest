@@ -205,7 +205,10 @@ store_sync (struct store *s)
 size_t
 jt_log_count (void)
 {
-  return log_n;
+  pthread_mutex_lock (&log_lock);
+  size_t n = log_n;
+  pthread_mutex_unlock (&log_lock);
+  return n;
 }
 
 const struct jt_write *
@@ -325,20 +328,93 @@ jt_save_image (const char *path)
 }
 
 /* ---------------------------------------------------------------- */
-/* The disk cache and the pager.
+/* Event trace: the last events of each block, printed when a page-in of
+   it is stale.  An event's DATA is decoded as the tests' versions of the
+   block's two halves.  */
 
-   Every block of the image has a slot.  PAGE_LOCK covers the residency
-   and dirty bits and the bytes of non-resident blocks; edits of resident
-   blocks by tests also take it, so that a page-out copies a whole edit.
-   The journal's sweep reads the slots without it, as it reads the real
-   disk cache without faulting.  */
+#define TRACE_LEN 65536
+static struct
+{
+  unsigned long n;
+  block_t b;
+  char what[40];
+  long v0, v1;
+} trace_ring[TRACE_LEN];
+static unsigned long trace_next;
+static pthread_mutex_t trace_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static long
+half_version (const void *data, block_t b, int half)
+{
+  const uint32_t *w = (const uint32_t *) ((const char *) data
+					  + half * (block_size / 2));
+  if (w[0] == 0 && w[1] == 0)
+    return 0;
+  return w[0] == b ? (long) w[1] : -1;
+}
+
+void
+jt_trace (block_t b, const char *what, const void *data)
+{
+  pthread_mutex_lock (&trace_lock);
+  unsigned long n = trace_next++;
+  trace_ring[n % TRACE_LEN].n = n + 1;
+  trace_ring[n % TRACE_LEN].b = b;
+  snprintf (trace_ring[n % TRACE_LEN].what, sizeof trace_ring[0].what,
+	    "%s", what);
+  trace_ring[n % TRACE_LEN].v0 = data ? half_version (data, b, 0) : -2;
+  trace_ring[n % TRACE_LEN].v1 = data ? half_version (data, b, 1) : -2;
+  pthread_mutex_unlock (&trace_lock);
+}
+
+static void
+trace_dump (block_t b)
+{
+  pthread_mutex_lock (&trace_lock);
+  unsigned long from = trace_next > TRACE_LEN ? trace_next - TRACE_LEN : 0;
+  fprintf (stderr, "jtest: events of block %u, oldest first "
+	   "(versions of the two halves):\n", b);
+  for (unsigned long n = from; n < trace_next; n++)
+    if (trace_ring[n % TRACE_LEN].n == n + 1 && trace_ring[n % TRACE_LEN].b == b)
+      {
+	if (trace_ring[n % TRACE_LEN].v0 == -2)
+	  fprintf (stderr, "  %8lu  %s\n", n, trace_ring[n % TRACE_LEN].what);
+	else
+	  fprintf (stderr, "  %8lu  %-30s v%ld/v%ld\n", n,
+		   trace_ring[n % TRACE_LEN].what,
+		   trace_ring[n % TRACE_LEN].v0, trace_ring[n % TRACE_LEN].v1);
+      }
+  pthread_mutex_unlock (&trace_lock);
+}
+
+/* ---------------------------------------------------------------- */
+/* The disk cache, the directory file pager, and the pager threads.
+
+   Each cache has a slot for every block of the image.  The disk cache's
+   slots are the real disk_cache; the directory pager's stand for the
+   directories' file-pager mappings, the only live copy of a directory
+   block.  PAGE_LOCK covers the residency and dirty bits and the bytes of
+   non-resident blocks; edits of resident blocks by tests also take it,
+   so that a page-out copies a whole edit.  The journal's sweep reads the
+   disk cache's slots without it, as it reads the real disk cache without
+   faulting.  */
+
+struct cache
+{
+  const char *name;
+  char *mem;
+  int disk_cache;		/* journal_store_write's DISK_CACHE.  */
+  unsigned char *resident, *dirty, *paging_in;
+  /* As libpager's PM_PAGINGOUT and PM_PAGEINWAIT: a block being written
+     out, and one whose page-in waits for that write to supply it.  */
+  unsigned char *paging_out, *pagein_wait;
+};
+
+static struct cache dcache = { .name = "disk cache", .disk_cache = 1 };
+static struct cache dirpager = { .name = "directory pager", .disk_cache = 0 };
 
 static pthread_mutex_t page_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t page_in_done = PTHREAD_COND_INITIALIZER;
-static unsigned char *resident, *dirty, *paging_in;
-/* As libpager's PM_PAGINGOUT and PM_PAGEINWAIT: a block being written
-   out, and one whose page-in waits for that write to supply it.  */
-static unsigned char *paging_out, *pagein_wait;
 static pthread_cond_t page_out_done = PTHREAD_COND_INITIALIZER;
 static unsigned long stale_reads;
 
@@ -347,6 +423,7 @@ enum req_kind { REQ_CLEAN, REQ_EVICT, REQ_PAGEIN, REQ_EXIT };
 struct req
 {
   enum req_kind kind;
+  struct cache *cache;
   block_t block;
   int wait;
   int done;
@@ -370,18 +447,37 @@ pager_write_keeps_page (void)
 }
 
 static char *
+cslot (struct cache *c, block_t b)
+{
+  return c->mem + ((size_t) b << log2_block_size);
+}
+
+static char *
 slot (block_t b)
 {
-  return (char *) disk_cache + ((size_t) b << log2_block_size);
+  return cslot (&dcache, b);
+}
+
+static void
+cache_init (struct cache *c, char *mem, size_t nblocks)
+{
+  c->mem = mem;
+  c->resident = malloc (nblocks);
+  memset (c->resident, 1, nblocks);
+  c->dirty = calloc (nblocks, 1);
+  c->paging_in = calloc (nblocks, 1);
+  c->paging_out = calloc (nblocks, 1);
+  c->pagein_wait = calloc (nblocks, 1);
 }
 
 /* Queue a request; with WAIT, wait for it and free it.  */
 static void
-submit (enum req_kind kind, block_t b, int wait)
+submit (enum req_kind kind, struct cache *c, block_t b, int wait)
 {
   struct req *r = calloc (1, sizeof *r);
 
   r->kind = kind;
+  r->cache = c;
   r->block = b;
   r->wait = wait;
   pthread_mutex_lock (&req_lock);
@@ -406,45 +502,53 @@ submit (enum req_kind kind, block_t b, int wait)
    page-in that comes while the block is being written out waits, and
    gets the data being written.  */
 static void
-serve_pageout (block_t b, int evict)
+serve_pageout (struct cache *c, block_t b, int evict)
 {
   char *buf = malloc (block_size);
   size_t amount = 0;
   error_t err;
 
   pthread_mutex_lock (&page_lock);
-  while (paging_out[b])
+  while (c->paging_out[b])
     pthread_cond_wait (&page_out_done, &page_lock);
-  if (!resident[b] || !dirty[b])
+  if (!c->resident[b] || !c->dirty[b])
     {
       /* Mach drops a clean page without writing it.  */
-      if (evict && resident[b])
-	resident[b] = 0;
+      if (evict && c->resident[b])
+	{
+	  c->resident[b] = 0;
+	  if (!c->disk_cache)
+	    jt_trace (b, "evicted clean, not written", cslot (c, b));
+	}
       pthread_mutex_unlock (&page_lock);
       free (buf);
       return;
     }
-  memcpy (buf, slot (b), block_size);
-  dirty[b] = 0;
+  memcpy (buf, cslot (c, b), block_size);
+  c->dirty[b] = 0;
   if (evict)
-    resident[b] = 0;
-  paging_out[b] = 1;
+    c->resident[b] = 0;
+  c->paging_out[b] = 1;
+  if (!c->disk_cache)
+    jt_trace (b, evict ? "page-out evict: copy" : "page-out clean: copy", buf);
   pthread_mutex_unlock (&page_lock);
 
   keeps_page = !evict;
-  err = journal_store_write (b, block_size, buf, &amount, 1);
+  err = journal_store_write (b, block_size, buf, &amount, c->disk_cache);
   if (err || amount != block_size)
-    ext2_warning ("jtest: page-out of block %u failed: %s", b,
+    ext2_warning ("jtest: %s page-out of block %u failed: %s", c->name, b,
 		  strerror (err ? err : EIO));
 
   pthread_mutex_lock (&page_lock);
-  paging_out[b] = 0;
-  if (pagein_wait[b])
+  if (!c->disk_cache)
+    jt_trace (b, "page-out: written", NULL);
+  c->paging_out[b] = 0;
+  if (c->pagein_wait[b])
     {
       /* memory_object_data_supply of what was written.  */
-      memcpy (slot (b), buf, block_size);
-      resident[b] = 1;
-      pagein_wait[b] = 0;
+      memcpy (cslot (c, b), buf, block_size);
+      c->resident[b] = 1;
+      c->pagein_wait[b] = 0;
       pthread_cond_broadcast (&page_in_done);
     }
   pthread_cond_broadcast (&page_out_done);
@@ -453,44 +557,51 @@ serve_pageout (block_t b, int evict)
 }
 
 static void
-serve_pagein (block_t b)
+serve_pagein (struct cache *c, block_t b)
 {
   void *buf = NULL;
   size_t len = 0;
   error_t err;
 
   pthread_mutex_lock (&page_lock);
-  if (resident[b] || paging_in[b] || pagein_wait[b])
+  if (c->resident[b] || c->paging_in[b] || c->pagein_wait[b])
     {
       pthread_mutex_unlock (&page_lock);
       return;
     }
-  if (paging_out[b])
+  if (c->paging_out[b])
     {
       /* The write will supply it.  */
-      pagein_wait[b] = 1;
+      c->pagein_wait[b] = 1;
       pthread_mutex_unlock (&page_lock);
       return;
     }
-  paging_in[b] = 1;
+  c->paging_in[b] = 1;
   pthread_mutex_unlock (&page_lock);
 
   err = journal_store_read (b, block_size, &buf, &len);
   if (err || len != block_size)
-    _ext2_panic (__func__, "page-in of block %u failed: %s", b,
+    _ext2_panic (__func__, "%s page-in of block %u failed: %s", c->name, b,
 		 strerror (err ? err : EIO));
 
   pthread_mutex_lock (&page_lock);
   /* The slot still holds what was evicted, and nothing edits an evicted
      block: the journal must return exactly that.  */
-  if (memcmp (buf, slot (b), block_size))
+  if (!c->disk_cache)
+    jt_trace (b, "page-in: journal returned", buf);
+  if (memcmp (buf, cslot (c, b), block_size))
     {
       stale_reads++;
-      ext2_warning ("jtest: STALE page-in of block %u", b);
+      ext2_warning ("jtest: STALE %s page-in of block %u", c->name, b);
+      if (!c->disk_cache)
+	{
+	  jt_trace (b, "page-in: evicted bytes were", cslot (c, b));
+	  trace_dump (b);
+	}
     }
-  memcpy (slot (b), buf, block_size);
-  resident[b] = 1;
-  paging_in[b] = 0;
+  memcpy (cslot (c, b), buf, block_size);
+  c->resident[b] = 1;
+  c->paging_in[b] = 0;
   pthread_cond_broadcast (&page_in_done);
   pthread_mutex_unlock (&page_lock);
   munmap (buf, len);
@@ -523,13 +634,13 @@ pager_thread (void *arg)
       switch (r->kind)
 	{
 	case REQ_CLEAN:
-	  serve_pageout (r->block, 0);
+	  serve_pageout (r->cache, r->block, 0);
 	  break;
 	case REQ_EVICT:
-	  serve_pageout (r->block, 1);
+	  serve_pageout (r->cache, r->block, 1);
 	  break;
 	case REQ_PAGEIN:
-	  serve_pagein (r->block);
+	  serve_pagein (r->cache, r->block);
 	  break;
 	case REQ_EXIT:
 	  break;
@@ -546,16 +657,17 @@ pager_thread (void *arg)
     }
 }
 
-/* Make B resident; PAGE_LOCK is held, and is dropped while waiting.  */
+/* Make B resident in C; PAGE_LOCK is held, and is dropped while
+   waiting.  */
 static void
-fault_locked (block_t b)
+fault_locked (struct cache *c, block_t b)
 {
-  while (!resident[b])
+  while (!c->resident[b])
     {
-      if (!paging_in[b] && !pagein_wait[b])
+      if (!c->paging_in[b] && !c->pagein_wait[b])
 	{
 	  pthread_mutex_unlock (&page_lock);
-	  submit (REQ_PAGEIN, b, 1);
+	  submit (REQ_PAGEIN, c, b, 1);
 	  pthread_mutex_lock (&page_lock);
 	}
       else
@@ -563,41 +675,96 @@ fault_locked (block_t b)
     }
 }
 
-void
-jt_edit (block_t b, size_t off, const void *data, size_t len)
+static void
+cache_edit (struct cache *c, block_t b, size_t off, const void *data,
+	    size_t len)
 {
   assert_backtrace (off + len <= block_size);
   pthread_mutex_lock (&page_lock);
-  fault_locked (b);
-  memcpy (slot (b) + off, data, len);
-  dirty[b] = 1;
+  fault_locked (c, b);
+  memcpy (cslot (c, b) + off, data, len);
+  c->dirty[b] = 1;
+  if (!c->disk_cache)
+    jt_trace (b, "edit: page now", cslot (c, b));
   pthread_mutex_unlock (&page_lock);
+}
+
+static void
+cache_read (struct cache *c, block_t b, void *out)
+{
+  pthread_mutex_lock (&page_lock);
+  fault_locked (c, b);
+  memcpy (out, cslot (c, b), block_size);
+  pthread_mutex_unlock (&page_lock);
+}
+
+void
+jt_edit (block_t b, size_t off, const void *data, size_t len)
+{
+  cache_edit (&dcache, b, off, data, len);
 }
 
 void
 jt_read (block_t b, void *out)
 {
-  pthread_mutex_lock (&page_lock);
-  fault_locked (b);
-  memcpy (out, slot (b), block_size);
-  pthread_mutex_unlock (&page_lock);
+  cache_read (&dcache, b, out);
 }
 
 void
 jt_pageout (block_t b, int evict, int wait)
 {
-  submit (evict ? REQ_EVICT : REQ_CLEAN, b, wait);
+  submit (evict ? REQ_EVICT : REQ_CLEAN, &dcache, b, wait);
+}
+
+void
+jt_dir_edit (block_t b, size_t off, const void *data, size_t len)
+{
+  cache_edit (&dirpager, b, off, data, len);
+}
+
+void
+jt_dir_read (block_t b, void *out)
+{
+  cache_read (&dirpager, b, out);
+}
+
+void
+jt_dir_pageout (block_t b, int evict, int wait)
+{
+  submit (evict ? REQ_EVICT : REQ_CLEAN, &dirpager, b, wait);
+}
+
+error_t
+jt_dir_mark_dirty (diskfs_transaction_t *txn, block_t b)
+{
+  char *image = malloc (block_size);
+  error_t err;
+
+  /* journal_mark_dirty_external reads the mapping, which faults the
+     page in if it is gone; this reads it the same way.  */
+  cache_read (&dirpager, b, image);
+  jt_trace (b, "mark_dirty_external", image);
+  err = journal_mark_dirty_external (txn, b, image);
+  free (image);
+  return err;
+}
+
+static void
+sync_cache (struct cache *c)
+{
+  block_t n = jt_nblocks ();
+
+  for (block_t b = 0; b < n; b++)
+    if (c->dirty[b])
+      submit (REQ_CLEAN, c, b, 0);
+  jt_drain ();
 }
 
 void
 jt_sync_all (void)
 {
-  block_t n = jt_nblocks ();
-
-  for (block_t b = 0; b < n; b++)
-    if (dirty[b])
-      submit (REQ_CLEAN, b, 0);
-  jt_drain ();
+  sync_cache (&dirpager);
+  sync_cache (&dcache);
 }
 
 void
@@ -638,7 +805,7 @@ ext2_test_evict_block (block_t block)
   int running = npagers_running;
   pthread_mutex_unlock (&req_lock);
   if (running)
-    submit (REQ_EVICT, block, 0);
+    submit (REQ_EVICT, &dcache, block, 0);
 }
 
 void
@@ -646,7 +813,7 @@ pokel_sync (struct pokel *pokel, int wait)
 {
   (void) pokel;
   (void) wait;
-  jt_sync_all ();
+  sync_cache (&dcache);
 }
 
 void
@@ -840,12 +1007,9 @@ jt_mount (const char *image, int npagers, int flags)
       disk_cache_info[b].flags = DC_INCORE;
       hurd_ihash_add (disk_cache_bptr, b, slot (b));
     }
-  resident = malloc (nblocks);
-  memset (resident, 1, nblocks);
-  dirty = calloc (nblocks, 1);
-  paging_in = calloc (nblocks, 1);
-  paging_out = calloc (nblocks, 1);
-  pagein_wait = calloc (nblocks, 1);
+  cache_init (&dcache, disk_cache, nblocks);
+  cache_init (&dirpager, malloc (disk_cache_size), nblocks);
+  memcpy (dirpager.mem, store_mem, disk_cache_size);
 
   sblock = (struct ext2_super_block *) (slot (boffs_block (SBLOCK_OFFS))
 					+ SBLOCK_OFFS % block_size);
@@ -873,7 +1037,7 @@ stop_pagers (void)
 {
   int n = npagers_running;
 
-  submit (REQ_EXIT, 0, 0);
+  submit (REQ_EXIT, NULL, 0, 0);
   for (int i = 0; i < n; i++)
     pthread_join (pagers[i], NULL);
   pthread_mutex_lock (&req_lock);
@@ -894,6 +1058,8 @@ stop_pagers (void)
 unsigned long
 jt_umount (void)
 {
+  /* diskfs_shutdown syncs the file pagers before the journal stops.  */
+  sync_cache (&dirpager);
   diskfs_journal_shutdown ();
   stop_pagers ();
   return jt_warnings;

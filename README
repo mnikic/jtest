@@ -14,6 +14,10 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                - the disk cache maps every block; blocks are resident or
                  evicted, and tests edit them with jt_edit, which faults
                  an evicted block back in;
+               - a second cache stands for the directories' file
+                 pagers, the only live copy of a directory block; it
+                 writes with DISK_CACHE 0, and tests edit it the way
+                 dir.c does (jt_dir_edit, jt_dir_mark_dirty);
                - pager threads serve clean/evict page-outs through
                  journal_store_write and page-ins through
                  journal_store_read; a page-in must return exactly the
@@ -32,6 +36,9 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                checkpoints, and handles larger than a transaction may be.
                t_threads: 4 RPC threads share transactions, with nested
                starts and a shared block edited under a lock.
+               t_dirs: directory blocks through the file pager, with
+               journal_*_external, reservations given up, and syncs and
+               evictions in the middle of an edit.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.
@@ -55,7 +62,14 @@ The pager follows libpager: writes of a block are serialized, and a
 page-in that comes while the block is being written out gets the data
 being written (PM_PAGEINWAIT) instead of reading it.
 
-What is not modelled: the file pagers (journal_*_external, directory
-blocks), the allocator and busy blocks beyond a callback, pages larger
+On a stale page-in, the harness prints the block's last events (edits,
+page-outs, page-ins, reservations, marks; jt_trace adds more).
+
+Known TSan report: the stop-time sweep copies a disk-cache block while
+a thread that joined during the unlocked sweep edits it.  The copy is
+redone before commit (the editor re-arms needs_copy), so it is benign,
+but it is a data race.
+
+What is not modelled: file data, the allocator and busy blocks beyond a callback, pages larger
 than a block, and anything above the journal API.  Test images are
 mke2fs -t ext3 (indirect-mapped journal inode, no extents).

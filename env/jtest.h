@@ -58,11 +58,30 @@ void jt_read (block_t b, void *out);
    until it is done.  */
 void jt_pageout (block_t b, int evict, int wait);
 
-/* Write out every dirty block and wait, as sync_global (1) does.  */
+/* The same for directory blocks, whose live copy is in a directory's
+   file pager instead of the disk cache.  The file pager writes them
+   through journal_store_write with DISK_CACHE 0.  Edit them inside a
+   handle as dir.c does: journal_get_write_access_external, jt_dir_edit,
+   then jt_dir_mark_dirty (or journal_release_access instead, if nothing
+   was edited).  */
+void jt_dir_edit (block_t b, size_t off, const void *data, size_t len);
+void jt_dir_read (block_t b, void *out);
+void jt_dir_pageout (block_t b, int evict, int wait);
+
+/* journal_mark_dirty_external of directory block B, as the file pager's
+   mapping has it.  */
+error_t jt_dir_mark_dirty (diskfs_transaction_t *txn, block_t b);
+
+/* Write out every dirty block of the directory pager and the disk cache
+   and wait, as diskfs_sync_everything does.  */
 void jt_sync_all (void);
 
 /* Wait until the pager threads have served every request so far.  */
 void jt_drain (void);
+
+/* Record WHAT happened to block B for the trace printed on a stale
+   page-in; DATA, if not NULL, is an image of the block.  */
+void jt_trace (block_t b, const char *what, const void *data);
 
 /* Number of page-ins whose data did not match the evicted bytes.  */
 unsigned long jt_stale_reads (void);
