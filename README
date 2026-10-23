@@ -18,21 +18,42 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                  journal_store_write and page-ins through
                  journal_store_read; a page-in must return exactly the
                  bytes that were evicted, or it counts as a stale read.
+  env/crash.c  jt_crash_check: rebuilds the image after prefixes of the
+               write log (and with the last write torn), replays each with
+               the real e2fsck -fy, requires e2fsck -fn clean, then runs
+               the test's own check.  Images are checked in parallel in
+               /dev/shm.  A failure keeps the crashed image, e2fsck's
+               replay of it, and a decoded write log (JBD2 headers,
+               descriptor tags, home writes) under build/.
   tests/       t_basic: many transactions under page-outs and evictions,
                clean unmount, every block home, e2fsck -fn clean.
-               t_crash: rebuilds the image after every prefix of the write
-               log (and with the last write torn), replays it with the
-               real e2fsck -fy, then checks e2fsck -fn is clean and the
-               blocks hold exactly the state of one commit, no older than
-               the last commit that had returned.
+               t_crash: one handle per transaction, each committed.
+               t_wrap: goes round the smallest log ~8 times; forced
+               checkpoints, and handles larger than a transaction may be.
+               t_threads: 4 RPC threads share transactions, with nested
+               starts and a shared block edited under a lock.
+               Each crash image must hold whole operations only, and
+               every operation stopped before a commit that returned.
+  patches/     Fixes found with the harness, against ext2fs/journal.c.
 
   make check                      build everything and run the tests
   make check SAN=address,undefined
   make check SAN=thread
-  JT_CRASH_POINTS=0 build/t_crash # every crash point (default: 300)
+  make check JOURNAL_C=patched/journal.c   test a modified copy
+  JT_CRASH_POINTS=0 build/t_wrap  # every crash point (default: 300)
+  JT_NO_CRASH=1 build/t_threads 7 # run seed 7, skip the crash images
+  JT_JOBS=1, JT_TMP=dir           # crash-check workers, image directory
+
+To try a patch:
+  mkdir -p patched && cp $HURD/ext2fs/journal.c patched/ &&
+  patch -d patched -p2 < patches/empty-log-superblock.diff
 
 A test's stderr (journal warnings, statistics, the flight recorder dump)
 goes to build/t_NAME.log.  Needs gcc and e2fsprogs on the host.
+
+The pager follows libpager: writes of a block are serialized, and a
+page-in that comes while the block is being written out gets the data
+being written (PM_PAGEINWAIT) instead of reading it.
 
 What is not modelled: the file pagers (journal_*_external, directory
 blocks), the allocator and busy blocks beyond a callback, pages larger
