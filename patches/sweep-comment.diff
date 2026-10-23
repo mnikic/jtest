@@ -1,0 +1,22 @@
+--- a/ext2fs/journal.c	2026-10-23 15:57:59.574395362 -0700
++++ b/ext2fs/journal.c	2026-10-23 16:05:00.710769032 -0700
+@@ -1563,13 +1563,12 @@
+       journal_buffer_t *curr = copy_list_head;
+       while (curr)
+ 	{
+-	  /**
+-          * Calculate the pointer to the live Mach VM cache for this block.
+-          * Because t_active_threads is 0 AND we hold a lock, we are mathematically
+-          * guaranteed that no VFS threads are currently mutating this block
+-          * because if they were mutating it they would have to first obtain
+-          * the journal lock AND also increase the t_active_threads .
+-          */
++	  /* The copy runs unlocked, and the transaction is still
++	     T_RUNNING: a handle can join meanwhile and edit the block
++	     during the copy, which is then torn.  Such a copy never
++	     commits.  The editor's journal_get_write_access and
++	     journal_mark_dirty each set needs_copy again, and the last
++	     handle to stop sweeps again with no editor left.  */
+ 	  /* A reference, as the editor's is gone: the disk cache can have
+ 	     let the block go since.  It does so only after the page is
+ 	     evicted, and the pager write of an evicted page puts it in the
