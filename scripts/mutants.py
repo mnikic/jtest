@@ -105,12 +105,10 @@ MUTANTS = [
             why="no revoke records: a freed block's old copy is replayed"),
     # Commits (edc81c9aa, a136e413c, f993252f5).
     Mutant ("empty-log-start", J,
-            """  if (journal->j_tail == 0)
-    {
-      journal->j_tail = txn->t_log_start;""",
+            """  if (journal->j_disk_tail == 0)
+    {""",
             """  if (0)
-    {
-      journal->j_tail = txn->t_log_start;""",
+    {""",
             "t_crash",
             why="a commit into an empty log is durable before s_start is"),
     Mutant ("free-only-commit", J,
