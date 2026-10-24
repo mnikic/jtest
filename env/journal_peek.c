@@ -9,6 +9,50 @@
 
 #include "jtest.h"
 
+static long
+claims_in (diskfs_transaction_t *txn)
+{
+  size_t iter = 0;
+  journal_buffer_t *jb;
+  long n = 0;
+
+  if (!txn)
+    return 0;
+  while ((jb = journal_map_iterate (&txn->t_buffer_map, &iter)) != NULL)
+    n += jb->jb_is_flushing != 0;
+  return n;
+}
+
+long
+jt_flush_claims (void)
+{
+  journal_t *j = ext2_journal;
+  long n;
+
+  if (!j)
+    return 0;
+  JOURNAL_LOCK (j);
+  if (j->j_checkpointing || j->j_committing_transaction)
+    n = -1;
+  else
+    {
+      n = claims_in (j->j_running_transaction);
+      for (diskfs_transaction_t *t = j->j_checkpoint_list; t;
+	   t = t->t_checkpoint_next)
+	n += claims_in (t);
+    }
+  JOURNAL_UNLOCK (j);
+  return n;
+}
+
+int
+jt_checkpointing (void)
+{
+  journal_t *j = ext2_journal;
+
+  return j && __atomic_load_n (&j->j_checkpointing, __ATOMIC_ACQUIRE);
+}
+
 int
 jt_txn_locked (diskfs_transaction_t *txn)
 {

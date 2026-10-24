@@ -231,6 +231,25 @@ MUTANTS = [
             "",
             "t_sync", env={"JT_REORDER": "4"},
             why="a commit returns before its commit block is on disk"),
+    # Failed home writes (jtest coverage gaps).
+    Mutant ("run-claims-kept", J,
+            """	  if (actual_blocks < flush_count)
+	    journal_clear_flushing_locked (b + actual_blocks,
+					   flush_count - actual_blocks);""",
+            """	  if (0)
+	    journal_clear_flushing_locked (b + actual_blocks,
+					   flush_count - actual_blocks);""",
+            "t_ioerr", ["pager-run"],
+            why="a failed write of several blocks keeps its claims"),
+    Mutant ("quiesce-ignores-error", J,
+            """  if (io_error)
+    {
+      JRNL_LOG_WARN ("[QUIESCE] I/O error""",
+            """  if (0)
+    {
+      JRNL_LOG_WARN ("[QUIESCE] I/O error""",
+            "t_wrap", ["ckpt-umount"],
+            why="a failed checkpoint at the unmount leaves the journal clean"),
 ]
 
 

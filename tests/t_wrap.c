@@ -7,23 +7,70 @@
    blocks out of a pool of 600, and every 50th writes 300 in one handle.
    Most end with a plain stop, leaving the commits to kjournald when a
    transaction is full; every 25th commits.  Then the journal is
-   unmounted cleanly, and crash images are checked as in t_crash.  */
+   unmounted cleanly, and crash images are checked as in t_crash.
+
+   This is the test whose log fills, so it is where checkpoints write
+   blocks home.  Two more runs each fail one checkpoint write with EIO:
+     ckpt         one while the operations go on: the checkpoint stops,
+		  and a later one writes the block;
+     ckpt-umount  every home write from the unmount on, the pagers'
+		  too, as when the disk goes bad then: the unmount's
+		  checkpoint fails, and leaves the journal dirty for a
+		  replay, which must bring every block's last version
+		  home.
+   By default all three run, each in a process of its own.  */
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "common.h"
 
 #define NBLK 600
 #define OPS 400
 
-int
-main (int argc, char **argv)
+static const char *mode;
+static int fail_armed, failed, umount_failures;
+static unsigned long matches, fail_at;
+static int umount_fail;
+
+static int
+fail_hook (uint64_t off, size_t len, const void *buf)
 {
-  const char *image = argc > 1 ? argv[1] : "build/base.img";
+  (void) len;
+  (void) buf;
+  if (!__atomic_load_n (&fail_armed, __ATOMIC_ACQUIRE)
+      || __atomic_load_n (&failed, __ATOMIC_ACQUIRE)
+      || jt_in_journal (off) || off < 4096 * 16
+      || (!umount_fail && (jt_on_pager_thread () || !jt_checkpointing ())))
+    return 0;
+  if (__atomic_add_fetch (&matches, 1, __ATOMIC_RELAXED) < fail_at)
+    return 0;
+  /* At the unmount, they all fail.  */
+  if (!umount_fail)
+    __atomic_store_n (&failed, 1, __ATOMIC_RELEASE);
+  else
+    __atomic_store_n (&umount_failures, 1, __ATOMIC_RELEASE);
+  return EIO;
+}
+
+static int
+run (const char *image, unsigned seed)
+{
   block_t blocks[NBLK];
   static struct history h;
   unsigned long warnings;
   size_t checked, log_writes = 0, jblocks = 0;
+  umount_fail = !strcmp (mode, "ckpt-umount");
 
-  srand (argc > 2 ? atoi (argv[2]) : 1);
+  srand (seed);
+  if (!strcmp (mode, "ckpt"))
+    {
+      fail_at = 100 + seed % 1000;
+      fail_armed = 1;
+    }
+  else if (umount_fail)
+    fail_at = 1;
+  jt_store_fail_hook = fail_hook;
   jt_mount (image, 2, 0);
   pick_free_blocks (blocks, NBLK);
   history_init (&h, blocks, NBLK, OPS);
@@ -53,17 +100,46 @@ main (int argc, char **argv)
 	jt_pageout (blocks[rand () % NBLK], rand () % 2, 0);
     }
 
+  if (umount_fail)
+    __atomic_store_n (&fail_armed, 1, __ATOMIC_RELEASE);
   warnings = jt_umount ();
-  CHECK (warnings == 0, "%lu journal warnings", warnings);
+  jt_store_fail_hook = NULL;
+  failed |= umount_failures;
+  if (strcmp (mode, "plain"))
+    {
+      CHECK (failed, "no checkpoint write failed (%s)", mode);
+      fprintf (stderr, "t_wrap %s: a checkpoint write failed; %lu "
+	       "warnings\n", mode, warnings);
+    }
+  else
+    CHECK (warnings == 0, "%lu journal warnings", warnings);
   CHECK (jt_stale_reads () == 0, "%lu stale page-ins", jt_stale_reads ());
 
-  /* Every block's last version is home.  */
+  /* Every block's last version is home, after the replay of a journal
+     the unmount left dirty.  */
+  const char *img = "build/t_wrap-umount.img";
+  jt_save_image (img);
+  if (umount_fail)
+    {
+      CHECK (jt_journal_check () == JOURNAL_NEEDS_REPLAY, "the unmount's "
+	     "home writes failed, but the journal is clean");
+      CHECK (jt_run ("e2fsck -E journal_only -y %s >%s.fsck 2>&1", img, img)
+	     <= 1, "replay of %s", img);
+    }
+  FILE *f = fopen (img, "r");
+  char *buf = malloc (block_size);
+  CHECK (f, "open %s", img);
   for (int k = 0; k < NBLK; k++)
     {
-      long v = pattern_version (jt_disk_block (blocks[k]), blocks[k]);
+      CHECK (!fseeko (f, (off_t) blocks[k] << log2_block_size, SEEK_SET)
+	     && fread (buf, block_size, 1, f) == 1, "read %s", img);
+      long v = pattern_version (buf, blocks[k]);
       CHECK (v == h.ver[k], "block %u: version %ld on disk, %u expected",
 	     blocks[k], v, h.ver[k]);
     }
+  fclose (f);
+  free (buf);
+  unlink (img);
 
   /* The log really went round a few times.  */
   for (size_t i = 0; i < jt_log_count (); i++)
@@ -75,9 +151,39 @@ main (int argc, char **argv)
   CHECK (log_writes > 3 * jblocks, "only %zu log writes for a %zu-block "
 	 "journal", log_writes, jblocks);
 
-  checked = jt_crash_check ("t_wrap", history_check, &h);
-  printf ("t_wrap: OK (%d operations, %zu writes, %.1f times round the "
-	  "log, %zu crash images)\n", OPS, jt_log_count (),
+  char name[64];
+  snprintf (name, sizeof name, strcmp (mode, "plain") ? "t_wrap-%s"
+	    : "t_wrap", mode);
+  checked = jt_crash_check (name, history_check, &h);
+  printf ("t_wrap: OK (%s: %d operations, %zu writes, %.1f times round the "
+	  "log, %zu crash images)\n", mode, OPS, jt_log_count (),
 	  (double) log_writes / jblocks, checked);
+  return 0;
+}
+
+int
+main (int argc, char **argv)
+{
+  const char *image = argc > 1 ? argv[1] : "build/base.img";
+  unsigned seed = argc > 2 ? atoi (argv[2]) : 1;
+  static const char *const all[] = { "plain", "ckpt", "ckpt-umount", NULL };
+  const char *one[] = { argc > 3 ? argv[3] : NULL, NULL };
+  const char *const *modes = argc > 3 ? one : all;
+  int status;
+
+  for (; *modes; modes++)
+    {
+      fflush (NULL);
+      pid_t pid = fork ();
+      CHECK (pid >= 0, "fork");
+      if (pid == 0)
+	{
+	  mode = *modes;
+	  exit (run (image, seed));
+	}
+      CHECK (waitpid (pid, &status, 0) == pid, "wait");
+      if (!WIFEXITED (status) || WEXITSTATUS (status))
+	return 1;
+    }
   return 0;
 }

@@ -172,6 +172,14 @@ static unsigned write_delay_us;	/* JT_WRITE_DELAY: up to this long.  */
 /* JT_PAGEOUT_DELAY: up to this long between a page-out's copy of the
    page and its write, as when the pager thread is preempted there.  */
 static unsigned pageout_delay_us;
+/* File pager page-outs of more than one block.  */
+static unsigned long pageout_runs;
+
+unsigned long
+jt_pageout_runs (void)
+{
+  return pageout_runs;
+}
 static struct jt_write *log_entries;
 static size_t log_n, log_alloc;
 
@@ -291,6 +299,16 @@ const struct jt_write *
 jt_log_entry (size_t i)
 {
   return &log_entries[i];
+}
+
+const void *
+jt_write_block (const struct jt_write *w, block_t b)
+{
+  uint64_t off = (uint64_t) b << log2_block_size;
+
+  if (!w->data || off < w->off || off >= w->off + w->len)
+    return NULL;
+  return (const char *) w->data + (off - w->off);
 }
 
 const void *
@@ -793,12 +811,19 @@ held_fault (int sig, siginfo_t *si, void *ctx)
 /* Like libpager's data-return: writes of a block are serialized, and a
    page-in that comes while the block is being written out waits, and
    gets the data being written.  */
+/* The most blocks a file pager's page-out writes at once here; ext2fs's
+   file_pager_write_pages goes up to 128.  */
+#define RUN_MAX 8
+
 static void
 serve_pageout (struct cache *c, block_t b, int evict)
 {
-  char *buf = malloc (block_size);
+  char *buf = malloc (RUN_MAX * block_size);
   size_t amount = 0;
   error_t err;
+  static __thread unsigned seed;
+  if (!seed)
+    seed = (unsigned) (uintptr_t) &seed;
 
   int hold = 0;
 
@@ -826,46 +851,67 @@ serve_pageout (struct cache *c, block_t b, int evict)
       free (buf);
       return;
     }
+
+  /* A file pager's page-out can take the dirty pages after B with it:
+     libpager hands file_pager_write_pages a run of pages, which writes
+     the consecutive blocks in one journal_store_write.  The pages of one
+     run are of one file, so directory blocks and file data do not mix.
+     The disk pager writes a page at a time.  */
+  size_t n = 1;
+  if (!c->disk_cache && rand_r (&seed) % 2)
+    {
+      size_t want = 2 + rand_r (&seed) % (RUN_MAX - 1);
+      while (n < want && b + n < jt_nblocks () && c->resident[b + n]
+	     && c->dirty[b + n] && !c->paging_out[b + n]
+	     && !c->pagein_wait[b + n] && c->is_dir[b + n] == c->is_dir[b])
+	n++;
+    }
   if (hold)
     view_hold (b);
-  memcpy (buf, cslot (c, b), block_size);
-  c->dirty[b] = 0;
-  if (evict)
-    c->resident[b] = 0;
-  c->paging_out[b] = 1;
-  if (!c->disk_cache)
-    jt_trace (b, evict ? "page-out evict: copy" : "page-out clean: copy", buf);
+  for (size_t i = 0; i < n; i++)
+    {
+      memcpy (buf + i * block_size, cslot (c, b + i), block_size);
+      c->dirty[b + i] = 0;
+      if (evict)
+	c->resident[b + i] = 0;
+      c->paging_out[b + i] = 1;
+      if (!c->disk_cache)
+	jt_trace (b + i, evict ? "page-out evict: copy"
+		  : "page-out clean: copy", buf + i * block_size);
+    }
   pthread_mutex_unlock (&page_lock);
 
   if (pageout_delay_us)
-    {
-      static __thread unsigned seed;
-      if (!seed)
-	seed = (unsigned) (uintptr_t) &seed;
-      usleep (rand_r (&seed) % pageout_delay_us);
-    }
+    usleep (rand_r (&seed) % pageout_delay_us);
   keeps_page = !evict && !hold;
-  err = journal_store_write (b, block_size, buf, &amount, c->disk_cache);
-  if (err || amount != block_size)
-    ext2_warning ("jtest: %s page-out of block %u failed: %s", c->name, b,
-		  strerror (err ? err : EIO));
+  err = journal_store_write (b, n * block_size, buf, &amount, c->disk_cache);
+  if (err || amount != n * block_size)
+    ext2_warning ("jtest: %s page-out of blocks %u[%zu] failed: %s",
+		  c->name, b, n, strerror (err ? err : EIO));
 
   pthread_mutex_lock (&page_lock);
-  if ((err || amount != block_size) && evict && !c->pagein_wait[b])
-    c->invalid[b] = 1;
-  if (!c->disk_cache)
-    jt_trace (b, "page-out: written", NULL);
+  for (size_t i = 0; i < n; i++)
+    {
+      block_t bi = b + i;
+      int failed = err || amount < (i + 1) * block_size;
+      if (failed && evict && !c->pagein_wait[bi])
+	c->invalid[bi] = 1;
+      if (!c->disk_cache)
+	jt_trace (bi, "page-out: written", NULL);
+      c->paging_out[bi] = 0;
+      if (c->pagein_wait[bi])
+	{
+	  /* memory_object_data_supply of what was written.  */
+	  memcpy (cslot (c, bi), buf + i * block_size, block_size);
+	  c->resident[bi] = 1;
+	  c->pagein_wait[bi] = 0;
+	  pthread_cond_broadcast (&page_in_done);
+	}
+    }
   if (hold)
     view_release (b);
-  c->paging_out[b] = 0;
-  if (c->pagein_wait[b])
-    {
-      /* memory_object_data_supply of what was written.  */
-      memcpy (cslot (c, b), buf, block_size);
-      c->resident[b] = 1;
-      c->pagein_wait[b] = 0;
-      pthread_cond_broadcast (&page_in_done);
-    }
+  if (n > 1)
+    __atomic_add_fetch (&pageout_runs, 1, __ATOMIC_RELAXED);
   pthread_cond_broadcast (&page_out_done);
   pthread_mutex_unlock (&page_lock);
   free (buf);
@@ -1614,6 +1660,20 @@ load_image (const char *path)
   do { if (e) _ext2_panic (__func__, "no memory for the disk cache map"); } \
   while (0)
 
+/* From the mount to the unmount, a deadlock ends the test after
+   JT_WATCHDOG seconds (default 300) instead of hanging it.  A test can
+   set its own SIGALRM handler and alarm after jt_mount.  */
+static void
+watchdog (int sig)
+{
+  static const char msg[] = "jtest: DEADLOCK: the test did not get to the "
+    "unmount in time (JT_WATCHDOG)\n";
+  (void) sig;
+  if (write (2, msg, sizeof msg - 1) < 0)
+    _exit (3);
+  _exit (3);
+}
+
 void
 jt_mount (const char *image, int npagers, int flags)
 {
@@ -1621,6 +1681,8 @@ jt_mount (const char *image, int npagers, int flags)
   block_t nblocks;
 
   jt_flags = flags;
+  signal (SIGALRM, watchdog);
+  alarm (getenv ("JT_WATCHDOG") ? atoi (getenv ("JT_WATCHDOG")) : 300);
   if (getenv ("JT_WRITE_DELAY"))
     write_delay_us = atoi (getenv ("JT_WRITE_DELAY"));
   if (getenv ("JT_PAGEOUT_DELAY"))
@@ -1735,6 +1797,7 @@ jt_umount (void)
   sync_cache (&dirpager);
   diskfs_journal_shutdown ();
   stop_pagers ();
+  alarm (0);
   return jt_warnings;
 }
 
@@ -1847,6 +1910,7 @@ void
 jt_abandon (void)
 {
   stop_pagers ();
+  alarm (0);
 }
 
 /* ---------------------------------------------------------------- */

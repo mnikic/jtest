@@ -71,7 +71,8 @@ def failure_line (cwd):
     for line in lines:
         if ("CHECK failed" in line or "crash after" in line
                 or "Assertion" in line or "STALE" in line
-                or "ERROR: " in line or "panic" in line):
+                or "ERROR: " in line or "panic" in line
+                or "DEADLOCK" in line):
             found = line.strip ()
             break
     return found[:200]

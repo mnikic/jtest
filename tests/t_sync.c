@@ -407,13 +407,14 @@ read_version (FILE *f, block_t b, char *buf)
   return pattern_version (buf, b);
 }
 
-/* Whether the crash tore a write of block B.  */
+/* Whether the crash tore a write of block B, maybe one of several
+   blocks.  */
 static int
 torn_block (size_t n, block_t b)
 {
   for (size_t i = n; i-- > 0;)
     if (jt_crash_torn_at (i))
-      return jt_log_entry (i)->off == (uint64_t) b << log2_block_size;
+      return jt_write_block (jt_log_entry (i), b) != NULL;
   return 0;
 }
 

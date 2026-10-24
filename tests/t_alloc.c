@@ -187,20 +187,17 @@ free_block (diskfs_transaction_t *txn, int k, int op)
 static uint32_t
 last_data_write (int k, size_t n, int *skip)
 {
-  uint64_t off = (uint64_t) pool[k] << log2_block_size;
-
   *skip = 0;
   for (size_t i = n; i-- > 0;)
     {
-      const struct jt_write *w = jt_log_entry (i);
-      if (!w->data || w->off != off || !jt_crash_kept (i))
+      const uint32_t *d = jt_write_block (jt_log_entry (i), pool[k]);
+      if (!d || !jt_crash_kept (i))
 	continue;
       if (jt_crash_torn_at (i))
 	{
 	  *skip = 1;
 	  return 0;
 	}
-      const uint32_t *d = w->data;
       if (d[0] == pool[k] && (d[1] & 0x80000000u))
 	return d[1];
     }

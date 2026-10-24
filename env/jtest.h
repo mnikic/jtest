@@ -92,6 +92,9 @@ extern int jt_inhibit_busy;
 void jt_dir_edit (block_t b, size_t off, const void *data, size_t len);
 void jt_dir_read (block_t b, void *out);
 void jt_dir_pageout (block_t b, int evict, int wait);
+/* How many file pager page-outs wrote more than one block: they take
+   the dirty blocks after the one asked for with them, half the time.  */
+unsigned long jt_pageout_runs (void);
 
 /* Drop block B's page from the file pager (FILE_PAGER 1), as truncating
    the file does, or from the disk cache (0), as ext2_new_block clearing
@@ -157,6 +160,9 @@ struct jt_write
 };
 size_t jt_log_count (void);
 const struct jt_write *jt_log_entry (size_t i);
+/* Block B's data in write W, which can be of several blocks, or NULL if
+   W does not write B.  */
+const void *jt_write_block (const struct jt_write *w, block_t b);
 
 /* Print log entries FROM to TO, decoded: syncs, log blocks (JBD2
    headers, descriptor tags) and home writes (their first two words, which
@@ -218,6 +224,15 @@ void jt_save_image (const char *path);
 
 /* Run CMD through the shell and return its exit status.  */
 int jt_run (const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
+
+/* Whether a checkpoint (journal_flush_checkpoints_locked) is at work:
+   the home writes the journal makes then are mostly its.  */
+int jt_checkpointing (void);
+/* How many blocks of the journal's transactions are claimed for a home
+   write (jb_is_flushing), or -1 while a commit or a checkpoint is at
+   work, which claim blocks for their own writes.  With the pagers
+   drained too (jt_drain), a claim is one nothing will release.  */
+long jt_flush_claims (void);
 
 /* Whether TXN is draining for a commit (T_LOCKED).  */
 int jt_txn_locked (diskfs_transaction_t *txn);
