@@ -36,7 +36,7 @@ CFLAGS += -fsanitize=$(SAN)
 LDFLAGS += -fsanitize=$(SAN)
 endif
 
-B = build
+B ?= build
 ENV = $(B)/journal.o $(B)/ihash.o $(B)/fakefs.o $(B)/crash.o
 TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_*.c))
 BALLOC_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_balloc*.c))

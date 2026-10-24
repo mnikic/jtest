@@ -213,6 +213,13 @@ int jt_shadow (diskfs_transaction_t *txn, block_t b, void *out);
 extern void (*jt_store_write_hook) (uint64_t off, size_t len,
 				    const void *buf);
 
+/* Called after every store_read of LEN bytes at byte offset OFF, if
+   set, outside any lock: a test holds a read there.  */
+extern void (*jt_store_read_hook) (uint64_t off, size_t len);
+
+/* Record a journal that was started (see env/fakefs.c).  */
+void jt_journal_started (void *journal);
+
 /* With env/ext2glue.c: a real node for inode INO, from the disk cache,
    with no file pager.  */
 struct node *jt_node_load (ino_t ino);

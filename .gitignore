@@ -1,2 +1,5 @@
 build/
 patched/
+soak/
+mutants/
+scripts/__pycache__/

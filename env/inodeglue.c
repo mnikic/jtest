@@ -202,6 +202,7 @@ ext2_start_journal (void)
     }
 
   ext2_journal = journal_create (jnode);
+  jt_journal_started (ext2_journal);
   diskfs_nput (jnode);
   if (!ext2_journal)
     return;

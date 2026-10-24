@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""Check that the tests still catch the bugs they were written for.
+
+  scripts/mutants.py [--seeds N] [--parallel P] [--points K]
+                     [--check] [--list] [MUTANT...]
+
+Each mutant below puts one bug back into a copy of the Hurd tree (as a
+replacement of a snippet of one file), builds the harness against the
+copy, and runs the test that must catch it over N seeds (default 3,
+deterministic tests once).  It is caught on a seed if the test fails.
+A mutant whose snippet is no longer in the tree, exactly once, is STALE:
+the code changed, and the entry needs updating.  --check only looks for
+stale ones.  The copy is links to the tree but for the mutated file,
+under mutants/; a mutant's runs are kept there if one is not caught.
+
+Exits 1 if a mutant is stale, or caught on fewer seeds than its MIN.
+"""
+
+import argparse
+import concurrent.futures
+import os
+import shutil
+import subprocess
+import sys
+
+sys.path.insert (0, os.path.dirname (os.path.abspath (__file__)))
+import common
+
+HURD = os.path.abspath (os.path.join (common.JTEST, "..", "cross-hurd", "src",
+                                      "hurd"))
+
+
+class Mutant:
+    def __init__ (self, name, path, old, new, test, args=(), env=None,
+                  min_caught=1, why="", san=None):
+        self.name, self.path, self.old, self.new = name, path, old, new
+        self.test, self.args, self.env = test, list (args), env or {}
+        self.min_caught, self.why, self.san = min_caught, why, san
+
+
+J = "ext2fs/journal.c"
+MUTANTS = [
+    # Reads after a failed flush (0ef4a0b25).
+    Mutant ("failed-flush-reads", J,
+            """  journal_buffer_t *found = NULL;
+  for (diskfs_transaction_t *t = journal->j_checkpoint_list; t;""",
+            """  journal_buffer_t *found = NULL;
+  for (diskfs_transaction_t *t = NULL; t;""",
+            "t_ioerr", ["checkpoint"],
+            why="a page-in after a failed flush misses the checkpointed shadow"),
+    # Aborted commits (062ebfc64, bd73496d2).
+    Mutant ("abort-reads", J,
+            """  jb = aborted ? journal_map_lookup (&aborted->t_buffer_map, b) : NULL;
+  if (jb && jb->needs_flush)
+    return jb;""",
+            """  jb = NULL;""",
+            "t_ioerr", ["log-data"],
+            why="reads miss the aborted transaction's shadows"),
+    Mutant ("abort-holds-writes", J,
+            """  jb_aborted = aborted ? journal_map_lookup (&aborted->t_buffer_map, b)
+    : NULL;""",
+            """  jb_aborted = NULL;""",
+            "t_ioerr", ["commit"],
+            why="pager writes of aborted blocks go home"),
+    Mutant ("abort-refuses-commits", J,
+            """  /* After an abort nothing commits again.  */
+  if (journal->j_errno)""",
+            """  if (0)""",
+            "t_ioerr", ["log-data"],
+            why="commits go on after an abort"),
+    Mutant ("abort-commit-error", J,
+            """  if (journal->j_errno && !tid_gt (journal->j_aborted_tid, tid))""",
+            """  if (0)""",
+            "t_ioerr", ["log-data"],
+            why="a commit after the abort returns 0"),
+    Mutant ("abort-mount-check", J,
+            """  else if (jsb->s_errno != 0)""",
+            """  else if (0)""",
+            "t_ioerr", ["commit"],
+            why="an aborted journal can be mounted before e2fsck"),
+    Mutant ("abort-readonly", J,
+            """      if (journal->j_errno && !diskfs_readonly)""",
+            """      if (0)""",
+            "t_ioerr", ["log-data"],
+            why="kjournald never makes the filesystem read-only"),
+    Mutant ("abort-no-inhibit", J,
+            """  journal->j_errno = err;
+  pthread_cond_signal (&journal->j_flusher_wakeup);""",
+            """  journal->j_errno = err;
+  diskfs_hard_readonly = diskfs_readonly = 1;
+  pthread_cond_signal (&journal->j_flusher_wakeup);""",
+            "t_abortfiles",
+            why="read-only set with RPCs in flight"),
+    # Escaped blocks (987473d24) and the log format.
+    Mutant ("escape-flag", J,
+            """      if (jb->jb_escaped)
+	flags |= JBD2_FLAG_ESCAPE;""",
+            """      (void) 0;""",
+            "t_logfmt", ["escape"],
+            why="an escaped block is not tagged so"),
+    Mutant ("revoke-records", J,
+            """  err = journal_write_revoke_records (journal, txn);""",
+            """  err = 0;""",
+            "t_free_only",
+            why="no revoke records: a freed block's old copy is replayed"),
+    # Commits (edc81c9aa, a136e413c, f993252f5).
+    Mutant ("empty-log-start", J,
+            """  if (journal->j_tail == 0)
+    {
+      journal->j_tail = txn->t_log_start;""",
+            """  if (0)
+    {
+      journal->j_tail = txn->t_log_start;""",
+            "t_crash",
+            why="a commit into an empty log is durable before s_start is"),
+    Mutant ("free-only-commit", J,
+            """  if (txn->t_buffer_map.size == 0 && !txn->t_freed_blocks
+      && txn->t_revoke_map.size == 0)""",
+            """  if (txn->t_buffer_map.size == 0)""",
+            "t_free_only",
+            why="a transaction that only frees is never committed"),
+    Mutant ("notify-committed", J,
+            """  if (commit && commit->t_state == T_COMMITTED)
+    journal_notify_txn_locked (commit, start_block, n_blocks);""",
+            """  if (commit)
+    journal_notify_txn_locked (commit, start_block, n_blocks);""",
+            "t_notify_race",
+            why="a home write notifies a transaction still taking edits"),
+    # The read-only switch (1d791e793 aside, which only ASan sees).
+    Mutant ("restart-sequence", J,
+            """  journal->j_transaction_sequence = be32toh (jsb->s_sequence);""",
+            """  journal->j_transaction_sequence = 1;""",
+            "t_rwcycle",
+            why="a restarted journal reuses transaction numbers"),
+    Mutant ("quiesce-checkpoints", J,
+            """    journal_flush_checkpoints_locked (ext2_journal, UINT32_MAX, 0);""",
+            """    0;""",
+            "t_rwcycle",
+            why="stopping the journal leaves blocks only in the log"),
+    # A stopped journal's journal_t outlives it (cbb7243b3; 1d791e793,
+    # reverted, freed it): only ASan sees the use after the free.
+    Mutant ("journal-t-kept", J,
+            """  /* The reference journal_create took.  */
+  if (jnode)
+    diskfs_nrele (jnode);
+}""",
+            """  /* The reference journal_create took.  */
+  if (jnode)
+    diskfs_nrele (jnode);
+  free (journal);
+}""",
+            "t_rwcycle", san="address,undefined",
+            why="a page-in in flight at the stop locks a freed journal"),
+    # The orphan list (05c25a017, bb62f8b7f, b3335f38e and orphan.c).
+    Mutant ("orphan-add-superblock", "ext2fs/orphan.c",
+            """  pthread_mutex_unlock (&orphan_lock);
+
+  /* hyper.c handles the superblock's get_write_access -> memcpy -> mark_dirty! */
+  diskfs_set_hypermetadata (0, 0);""",
+            """  pthread_mutex_unlock (&orphan_lock);""",
+            "t_orphan",
+            why="the list head is not journaled with the inode"),
+    Mutant ("orphan-del-relink", "ext2fs/orphan.c",
+            """      prev_di->i_dtime = htole32 (my_next);""",
+            """      (void) my_next;""",
+            "t_orphan",
+            why="removing an orphan does not relink its predecessor"),
+    Mutant ("orphan-recover-walk", "ext2fs/orphan.c",
+            """      di = dino_ref (inum);
+      next_orphan = le32toh (di->i_dtime);
+      dino_deref (di);""",
+            """      di = dino_ref (inum);
+      next_orphan = 0;
+      dino_deref (di);""",
+            "t_orphan",
+            why="recovery stops after the first orphan"),
+    Mutant ("orphan-recover-guard", "ext2fs/orphan.c",
+            """  if (live)
+    return;
+""",
+            "",
+            "t_rwcycle",
+            why="recovery on a switch to writable breaks the live list"),
+    Mutant ("write-node-dtime", "ext2fs/inode.c",
+            """      if (!diskfs_node_disknode (np)->on_orphan_list)
+	{""",
+            """      if (1)
+	{""",
+            "t_orphan",
+            why="write_node overwrites the next-orphan pointer"),
+    Mutant ("write-node-aborted", "ext2fs/inode.c",
+            """      assert_backtrace (!diskfs_readonly || journal_aborted ());""",
+            """      assert_backtrace (!diskfs_readonly);""",
+            "t_abortfiles",
+            why="writing a node after an abort asserts"),
+    Mutant ("readonly-recover", "ext2fs/hyper.c",
+            """  if (!readonly)
+    ext2_recover_orphan_list ();""",
+            """  (void) 0;""",
+            "t_orphan",
+            why="orphans are not recovered when the filesystem becomes writable"),
+    Mutant ("mkfile-orphan", "libdiskfs/node-create.c",
+            """  if (!err && !name)
+    diskfs_orphan_add (np);""",
+            """  (void) 0;""",
+            "t_orphan",
+            why="dir_mkfile's file is not on the orphan list"),
+    # truncate.c (de05e77).
+    Mutant ("trunc-first", "ext2fs/truncate.c",
+            """      for (index = first; index < addr_per_block; index++)""",
+            """      for (index = 0; index < addr_per_block; index++)""",
+            "t_trunc",
+            why="a truncation frees blocks below the new end"),
+    Mutant ("trunc-reserve", "ext2fs/truncate.c",
+            """	  journal_get_write_access (txn, *p);
+	  record_indir_poke (node, ind_bh);""",
+            """	  record_indir_poke (node, ind_bh);""",
+            "t_trunc",
+            why="a surviving indirect block is edited unreserved"),
+]
+
+
+def overlay (dest, path):
+    """A copy of the Hurd tree in DEST, links but for the directory of
+    PATH, which has links but for PATH: returned, to be written."""
+    shutil.rmtree (dest, ignore_errors=True)
+    os.makedirs (dest)
+    top = path.split ("/")[0]
+    for entry in os.listdir (HURD):
+        if entry != top:
+            os.symlink (os.path.join (HURD, entry), os.path.join (dest, entry))
+    os.makedirs (os.path.join (dest, top))
+    for entry in os.listdir (os.path.join (HURD, top)):
+        if entry != os.path.basename (path):
+            os.symlink (os.path.join (HURD, top, entry),
+                        os.path.join (dest, top, entry))
+    return os.path.join (dest, path)
+
+
+def snippet_count (m):
+    with open (os.path.join (HURD, m.path)) as f:
+        return f.read ().count (m.old)
+
+
+def run_mutant (m, a, jobs):
+    base = os.path.join (common.JTEST, a.out, m.name)
+    target = overlay (os.path.join (base, "hurd"), m.path)
+    with open (os.path.join (HURD, m.path)) as f:
+        text = f.read ()
+    with open (target, "w") as f:
+        f.write (text.replace (m.old, m.new))
+    build = os.path.join (base, "build")
+    make = ["make", "-s", "-C", common.JTEST, "B=" + build,
+            "HURD=" + os.path.join (base, "hurd"), os.path.join (build, m.test),
+            os.path.join (build, "base.img"), os.path.join (build, "balloc.img"),
+            os.path.join (build, "big.img")]
+    if m.san:
+        make.append ("SAN=" + m.san)
+    if subprocess.run (make, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL).returncode:
+        return m, None, "the build failed"
+    seeds = [1] if m.test in common.DETERMINISTIC else range (1, a.seeds + 1)
+    env = dict (m.env, JT_CRASH_POINTS=str (a.points))
+    caught, line = 0, ""
+    for seed in seeds:
+        cwd = os.path.join (base, "seed-%d" % seed)
+        common.workdir (cwd, build)
+        status, _ = common.run (os.path.join (build, m.test), m.test, seed,
+                                cwd, m.args, env, a.timeout, jobs)
+        if status != 0:
+            caught += 1
+            line = line or common.failure_line (cwd) or (
+                "timeout" if status is None else "exit %d" % status)
+    if caught >= min (m.min_caught, len (seeds)):
+        shutil.rmtree (base, ignore_errors=True)
+    return m, (caught, len (seeds)), line
+
+
+def main ():
+    ap = argparse.ArgumentParser (description="Run the known mutants.")
+    ap.add_argument ("--seeds", type=int, default=3)
+    ap.add_argument ("--parallel", type=int, default=4)
+    ap.add_argument ("--points", type=int, default=100)
+    ap.add_argument ("--timeout", type=int, default=1800)
+    ap.add_argument ("--out", default="mutants")
+    ap.add_argument ("--check", action="store_true")
+    ap.add_argument ("--list", action="store_true")
+    ap.add_argument ("names", nargs="*")
+    a = ap.parse_args ()
+
+    chosen = [m for m in MUTANTS if not a.names or m.name in a.names]
+    unknown = set (a.names) - {m.name for m in MUTANTS}
+    if unknown:
+        sys.exit ("no such mutant: " + ", ".join (sorted (unknown)))
+    if a.list:
+        for m in chosen:
+            print ("%-24s %-14s %s" % (m.name, m.test, m.why))
+        return
+
+    stale = [m for m in chosen if snippet_count (m) != 1]
+    for m in stale:
+        print ("%-24s STALE: its snippet is in %s %d times, not once"
+               % (m.name, m.path, snippet_count (m)))
+    if a.check:
+        if not stale:
+            print ("%d mutants, none stale" % len (chosen))
+        sys.exit (1 if stale else 0)
+
+    jobs = max (1, (os.cpu_count () or 1) // a.parallel)
+    bad = len (stale)
+    with concurrent.futures.ThreadPoolExecutor (a.parallel) as pool:
+        futures = [pool.submit (run_mutant, m, a, jobs)
+                   for m in chosen if m not in stale]
+        for f in concurrent.futures.as_completed (futures):
+            m, result, line = f.result ()
+            if result is None:
+                print ("%-24s BUILD FAILED" % m.name, flush=True)
+                bad += 1
+                continue
+            caught, runs = result
+            ok = caught >= min (m.min_caught, runs)
+            bad += not ok
+            print ("%-24s %-14s caught %d/%d%s  %s"
+                   % (m.name, m.test, caught, runs, "" if ok else "  MISSED",
+                      line if caught else m.why), flush=True)
+    print ("\n%d mutants: %d stale, missed or not built" % (len (chosen), bad))
+    sys.exit (1 if bad else 0)
+
+
+if __name__ == "__main__":
+    main ()

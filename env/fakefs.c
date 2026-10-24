@@ -58,6 +58,7 @@ struct store *store = &fake_store;
 
 void (*jt_on_release) (block_t start, unsigned long count);
 void (*jt_store_write_hook) (uint64_t off, size_t len, const void *buf);
+void (*jt_store_read_hook) (uint64_t off, size_t len);
 int (*jt_store_fail_hook) (uint64_t off, size_t len, const void *buf);
 void (*jt_ref_mapped_hook) (block_t b);
 
@@ -166,6 +167,9 @@ static size_t store_bytes;
 
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned write_delay_us;	/* JT_WRITE_DELAY: up to this long.  */
+/* JT_PAGEOUT_DELAY: up to this long between a page-out's copy of the
+   page and its write, as when the pager thread is preempted there.  */
+static unsigned pageout_delay_us;
 static struct jt_write *log_entries;
 static size_t log_n, log_alloc;
 
@@ -242,9 +246,24 @@ store_read (struct store *s, store_offset_t addr, size_t amount,
   pthread_mutex_lock (&log_lock);
   memcpy ((void *) p, store_mem + off, amount);
   pthread_mutex_unlock (&log_lock);
+  if (jt_store_read_hook)
+    jt_store_read_hook (off, amount);
   *buf = (void *) p;
   *len = amount;
   return 0;
+}
+
+/* Every journal started.  A stopped journal's journal_t is kept for
+   readers still using it (journal_free_resources); keeping them here
+   too tells LeakSanitizer they are meant to stay.  */
+static void *journals[64];
+static int njournals;
+
+void
+jt_journal_started (void *journal)
+{
+  if (njournals < (int) (sizeof journals / sizeof *journals))
+    journals[njournals++] = journal;
 }
 
 error_t
@@ -630,6 +649,13 @@ serve_pageout (struct cache *c, block_t b, int evict)
     jt_trace (b, evict ? "page-out evict: copy" : "page-out clean: copy", buf);
   pthread_mutex_unlock (&page_lock);
 
+  if (pageout_delay_us)
+    {
+      static __thread unsigned seed;
+      if (!seed)
+	seed = (unsigned) (uintptr_t) &seed;
+      usleep (rand_r (&seed) % pageout_delay_us);
+    }
   keeps_page = !evict;
   err = journal_store_write (b, block_size, buf, &amount, c->disk_cache);
   if (err || amount != block_size)
@@ -959,7 +985,7 @@ sync_cache (struct cache *c)
   for (block_t b = 0; b < n; b++)
     {
       pthread_mutex_lock (&page_lock);
-      int d = c->dirty[b];
+      int d = c->dirty[b] || c->paging_out[b];
       pthread_mutex_unlock (&page_lock);
       if (d)
 	submit (REQ_CLEAN, c, b, 0);
@@ -978,7 +1004,9 @@ void (*jt_write_all_disknodes) (diskfs_transaction_t *txn);
 
 /* pager_sync of every file pager: write the dirty pages out, keeping
    them; with WAIT, wait for the writes.  With a journal, directories are
-   left out, as their blocks are journaled.  */
+   left out, as their blocks are journaled.  A page being written out is
+   busy: the kernel's lock request waits for that write, and then writes
+   the page again if it is dirty again (serve_pageout).  */
 static void
 sync_file_pagers (int wait)
 {
@@ -988,7 +1016,8 @@ sync_file_pagers (int wait)
   for (block_t b = 0; b < n; b++)
     {
       pthread_mutex_lock (&page_lock);
-      int d = dirpager.dirty[b] && !(ext2_journal && dirpager.is_dir[b]);
+      int d = (dirpager.dirty[b] || dirpager.paging_out[b])
+	&& !(ext2_journal && dirpager.is_dir[b]);
       pthread_mutex_unlock (&page_lock);
       if (!d)
 	continue;
@@ -1386,6 +1415,8 @@ jt_mount (const char *image, int npagers, int flags)
   jt_flags = flags;
   if (getenv ("JT_WRITE_DELAY"))
     write_delay_us = atoi (getenv ("JT_WRITE_DELAY"));
+  if (getenv ("JT_PAGEOUT_DELAY"))
+    pageout_delay_us = atoi (getenv ("JT_PAGEOUT_DELAY"));
   load_image (image);
 
   sb = (struct ext2_super_block *) (store_mem + SBLOCK_OFFS);
@@ -1455,6 +1486,7 @@ jt_mount (const char *image, int npagers, int flags)
   pthread_mutex_unlock (&req_lock);
 
   ext2_journal = journal_create (jnode);
+  jt_journal_started (ext2_journal);
   sblock->s_feature_incompat |= htole32 (EXT3_FEATURE_INCOMPAT_RECOVER);
   mapped_sblock->s_feature_incompat |= htole32 (EXT3_FEATURE_INCOMPAT_RECOVER);
   write_sblock ();
