@@ -46,6 +46,10 @@ block_t jt_nblocks (void);
 /* Whether block B is free in the image's block bitmap as loaded.  */
 int jt_block_free (block_t b);
 
+/* Where inode INO is on disk: block *BLK of its inode table, at byte
+   offset *OFF.  */
+void jt_inode_location (ino_t ino, block_t *blk, size_t *off);
+
 /* Copy LEN bytes from DATA to offset OFF of block B in the disk cache,
    paging B in first if it is evicted, and mark B dirty.  */
 void jt_edit (block_t b, size_t off, const void *data, size_t len);

@@ -66,6 +66,14 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                journal_wait_freed_blocks never waits on it, and its
                blocks land in the faulting operation's transaction.  A
                watchdog turns a deadlock into a failure.
+               t_balloc: the real balloc.c (BALLOC_C=, default the
+               tree's), linked only into t_balloc*: two files grow and
+               shrink through ext2_new_block and ext2_free_blocks, their
+               inodes and indirect blocks journaled, data written home
+               between operations, and a filler thread turning the log
+               over.  Crash images must be e2fsck clean, the superblock's
+               free count that of the groups, and each file in the state
+               of one of its operations.  Runs on build/balloc.img.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.
@@ -103,7 +111,18 @@ stop sweeps again.  t_sweep_race forces it and checks that.
 jt_pager_call runs a callback on a pager thread, for the pager
 callbacks that start transactions.
 
-What is not modelled: the allocator's bitmaps (t_alloc models only its
-busy rule), pages larger
+For balloc.c, the harness has the rest of ext2fs it needs: a separate
+in-core superblock with hyper.c's journaled diskfs_set_hypermetadata,
+disk cache references, pokel_add marking pages dirty.  balloc.c writes
+the disk cache without faulting, so a referenced block (and the
+superblock and group descriptors) is never evicted in the harness.
+
+Known TSan reports, both formal races only: journal_thread_transaction
+reads t_state unlocked in its assertion while a commit sets T_LOCKED;
+diskfs_set_hypermetadata copies sblock without global_lock while
+balloc.c changes its free count (as hyper.c does; the editor's
+sblock_dirty brings a second copy).
+
+What is not modelled: pages larger
 than a block, and anything above the journal API.  Test images are
 mke2fs -t ext3 (indirect-mapped journal inode, no extents).

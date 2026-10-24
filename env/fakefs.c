@@ -24,8 +24,16 @@ unsigned int log2_block_size;
 unsigned log2_dev_blocks_per_fs_block;
 unsigned long groups_count;
 unsigned int sblock_block = 1;
-struct ext2_super_block *sblock;
+struct ext2_super_block *sblock;	/* The in-core copy, as in hyper.c.  */
+static struct ext2_super_block *mapped_sblock;	/* In the disk cache.  */
+int sblock_dirty;
 struct ext2_group_desc *group_desc_image;
+unsigned long itb_per_group;
+unsigned long desc_per_block;
+pthread_spinlock_t global_lock;
+unsigned char *modified_global_blocks;
+pthread_spinlock_t modified_global_blocks_lock;
+int diskfs_synchronous;
 struct pokel global_pokel;
 int diskfs_readonly;
 vm_size_t vm_page_size = 4096;
@@ -61,6 +69,19 @@ ext2_warning (const char *fmt, ...)
     return;
   va_start (ap, fmt);
   fputs ("ext2fs: warning: ", stderr);
+  vfprintf (stderr, fmt, ap);
+  fputc ('\n', stderr);
+  va_end (ap);
+}
+
+void
+_ext2_error (const char *func, const char *fmt, ...)
+{
+  va_list ap;
+
+  __atomic_add_fetch (&jt_warnings, 1, __ATOMIC_RELAXED);
+  va_start (ap, fmt);
+  fprintf (stderr, "ext2fs: error: %s: ", func);
   vfprintf (stderr, fmt, ap);
   fputc ('\n', stderr);
   va_end (ap);
@@ -531,6 +552,10 @@ serve_pageout (struct cache *c, block_t b, int evict)
   pthread_mutex_lock (&page_lock);
   while (c->paging_out[b])
     pthread_cond_wait (&page_out_done, &page_lock);
+  if (evict && c->disk_cache
+      && (disk_cache_info[b].ref_count || b < group_desc_block_end))
+    /* balloc.c writes such blocks without faulting: they stay.  */
+    evict = 0;
   if (!c->resident[b] || !c->dirty[b])
     {
       /* Mach drops a clean page without writing it.  */
@@ -853,18 +878,100 @@ jt_stale_reads (void)
 /* ---------------------------------------------------------------- */
 /* ext2fs functions that journal.c calls.  */
 
+/* References pin a block in the harness's disk cache: balloc.c and the
+   other users write the memory directly, where Mach would fault an
+   evicted page back in.  Under PAGE_LOCK.  */
+static void
+ref_block (block_t b)
+{
+  assert_backtrace (disk_cache_info[b].ref_count + 1
+		    > disk_cache_info[b].ref_count);
+  disk_cache_info[b].ref_count++;
+}
+
 void *
 disk_cache_block_ref_mapped (block_t block)
 {
   if (jt_ref_mapped_hook)
     jt_ref_mapped_hook (block);
+  pthread_mutex_lock (&page_lock);
+  ref_block (block);
+  pthread_mutex_unlock (&page_lock);
   return slot (block);
+}
+
+void *
+disk_cache_block_ref (block_t block)
+{
+  pthread_mutex_lock (&page_lock);
+  fault_locked (&dcache, block);
+  ref_block (block);
+  pthread_mutex_unlock (&page_lock);
+  return slot (block);
+}
+
+void
+disk_cache_block_ref_ptr (void *ptr)
+{
+  pthread_mutex_lock (&page_lock);
+  ref_block (bptr_index (ptr));
+  pthread_mutex_unlock (&page_lock);
 }
 
 void
 _disk_cache_block_deref (void *ptr)
 {
-  (void) ptr;
+  block_t b = bptr_index (ptr);
+
+  pthread_mutex_lock (&page_lock);
+  assert_backtrace (disk_cache_info[b].ref_count > 0);
+  disk_cache_info[b].ref_count--;
+  pthread_mutex_unlock (&page_lock);
+}
+
+/* ext2fs has written into the page: it is dirty.  With a journal the
+   pokel itself is only released, never synced.  */
+void
+pokel_add (struct pokel *pokel, void *loc, vm_size_t length)
+{
+  block_t first = bptr_index (loc);
+  block_t last = bptr_index ((char *) loc + length - 1);
+
+  (void) pokel;
+  pthread_mutex_lock (&page_lock);
+  for (block_t b = first; b <= last; b++)
+    dcache.dirty[b] = 1;
+  pthread_mutex_unlock (&page_lock);
+}
+
+/* The journaled path of hyper.c's diskfs_set_hypermetadata.  */
+error_t
+diskfs_set_hypermetadata (int wait, int clean)
+{
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  block_t blk = boffs_block (SBLOCK_OFFS);
+
+  (void) clean;
+  if (sblock_dirty)
+    {
+      sblock_dirty = 0;
+      journal_get_write_access (txn, blk);
+      pthread_mutex_lock (&page_lock);
+      memcpy (mapped_sblock, sblock, SBLOCK_SIZE);
+      dcache.dirty[blk] = 1;
+      pthread_mutex_unlock (&page_lock);
+      journal_mark_dirty (txn, blk);
+      if (modified_global_blocks)
+	{
+	  pthread_spin_lock (&modified_global_blocks_lock);
+	  set_bit (blk, modified_global_blocks);
+	  pthread_spin_unlock (&modified_global_blocks_lock);
+	}
+    }
+  if (wait)
+    diskfs_journal_set_sync (txn);
+  diskfs_journal_stop_transaction (txn);
+  return 0;
 }
 
 /* TESTING ONLY in ext2fs: evict BLOCK without waiting.  */
@@ -886,7 +993,8 @@ pokel_sync (struct pokel *pokel, int wait)
   sync_cache (&dcache);
 }
 
-void
+/* Weak: balloc.c's, where it is linked in.  */
+__attribute__ ((weak)) void
 ext2_release_busy_blocks (block_t block, unsigned long count)
 {
   if (jt_on_release)
@@ -938,6 +1046,8 @@ void
 ext2_clear_needs_recovery (void)
 {
   sblock->s_feature_incompat &= ~htole32 (EXT3_FEATURE_INCOMPAT_RECOVER);
+  mapped_sblock->s_feature_incompat
+    &= ~htole32 (EXT3_FEATURE_INCOMPAT_RECOVER);
   write_sblock ();
 }
 
@@ -979,6 +1089,21 @@ map_indirect (block_t ind, int depth)
       jnode_map[jnode_map_len++] = le32toh (p[i]);
     else
       map_indirect (le32toh (p[i]), depth - 1);
+}
+
+void
+jt_inode_location (ino_t ino, block_t *blk, size_t *off)
+{
+  unsigned long ipg = le32toh (sblock->s_inodes_per_group);
+  size_t isize = le32toh (sblock->s_rev_level)
+    ? le16toh (sblock->s_inode_size) : 128;
+  const struct ext2_group_desc *gd = (const struct ext2_group_desc *)
+    (store_base + ((size_t) group_desc_block << log2_block_size))
+    + (ino - 1) / ipg;
+  size_t byte = ((ino - 1) % ipg) * isize;
+
+  *blk = le32toh (gd->bg_inode_table) + byte / block_size;
+  *off = byte % block_size;
 }
 
 static void
@@ -1043,6 +1168,10 @@ load_image (const char *path)
   fake_store.size = store_bytes;
 }
 
+#define CHECK_ADD(e) \
+  do { if (e) _ext2_panic (__func__, "no memory for the disk cache map"); } \
+  while (0)
+
 void
 jt_mount (const char *image, int npagers, int flags)
 {
@@ -1071,21 +1200,32 @@ jt_mount (const char *image, int npagers, int flags)
   disk_cache_blocks = nblocks;
   disk_cache = aligned_alloc (vm_page_size, disk_cache_size);
   memcpy (disk_cache, store_mem, disk_cache_size);
+  cache_init (&dcache, disk_cache, nblocks);
   disk_cache_info = calloc (nblocks, sizeof *disk_cache_info);
   hurd_ihash_create (&disk_cache_bptr, HURD_IHASH_NO_LOCP);
   for (block_t b = 0; b < nblocks; b++)
     {
       disk_cache_info[b].block = b;
       disk_cache_info[b].flags = DC_INCORE;
-      hurd_ihash_add (disk_cache_bptr, b, slot (b));
+      CHECK_ADD (hurd_ihash_add (disk_cache_bptr, b, slot (b)));
     }
-  cache_init (&dcache, disk_cache, nblocks);
   cache_init (&dirpager, malloc (disk_cache_size), nblocks);
   memcpy (dirpager.mem, store_mem, disk_cache_size);
 
-  sblock = (struct ext2_super_block *) (slot (boffs_block (SBLOCK_OFFS))
-					+ SBLOCK_OFFS % block_size);
+  mapped_sblock = (struct ext2_super_block *) (slot (boffs_block (SBLOCK_OFFS))
+					       + SBLOCK_OFFS % block_size);
+  sblock = malloc (SBLOCK_SIZE);
+  memcpy (sblock, mapped_sblock, SBLOCK_SIZE);
   group_desc_image = (struct ext2_group_desc *) slot (group_desc_block);
+  {
+    size_t isize = le32toh (sblock->s_rev_level)
+      ? le16toh (sblock->s_inode_size) : 128;
+    itb_per_group = le32toh (sblock->s_inodes_per_group) / (block_size / isize);
+    desc_per_block = block_size / sizeof (struct ext2_group_desc);
+  }
+  pthread_spin_init (&global_lock, PTHREAD_PROCESS_PRIVATE);
+  pthread_spin_init (&modified_global_blocks_lock, PTHREAD_PROCESS_PRIVATE);
+  modified_global_blocks = calloc ((nblocks + 7) / 8, 1);
 
   load_journal_inode ();
   if (journal_check (jnode) != JOURNAL_USABLE)
@@ -1101,6 +1241,7 @@ jt_mount (const char *image, int npagers, int flags)
 
   ext2_journal = journal_create (jnode);
   sblock->s_feature_incompat |= htole32 (EXT3_FEATURE_INCOMPAT_RECOVER);
+  mapped_sblock->s_feature_incompat |= htole32 (EXT3_FEATURE_INCOMPAT_RECOVER);
   write_sblock ();
 }
 
