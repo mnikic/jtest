@@ -58,8 +58,9 @@ void jt_edit (block_t b, size_t off, const void *data, size_t len);
 void jt_read (block_t b, void *out);
 
 /* Ask the pager threads to write B out, keeping it resident (EVICT 0) or
-   evicting it (EVICT 1).  A clean block is not written.  With WAIT, wait
-   until it is done.  */
+   evicting it (EVICT 1).  While a journal runs it is always evicted, as
+   ext2fs syncs no journaled block then (fakefs.c).  A clean block is not
+   written.  With WAIT, wait until it is done.  */
 void jt_pageout (block_t b, int evict, int wait);
 /* An ext2_warning whose format contains this is not counted as one of
    jt_umount's warnings.  */
@@ -125,8 +126,8 @@ error_t jt_dir_mark_dirty (diskfs_transaction_t *txn, block_t b);
    (journal_thread_set_pager), so a transaction FN starts never waits.  */
 void jt_pager_call (void (*fn) (void *), void *arg);
 
-/* Write out every dirty block of the directory pager and the disk cache
-   and wait, as diskfs_sync_everything does.  */
+/* Write out every dirty block of the directory pager and the disk cache,
+   keeping them, and wait: as without a journal, or when it stops.  */
 void jt_sync_all (void);
 
 /* Wait until the pager threads have served every request so far.  */

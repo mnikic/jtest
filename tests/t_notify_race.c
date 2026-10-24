@@ -12,10 +12,11 @@
       goes home instead of being intercepted.
    2. Thread A opens a handle on T and journals a disk-cache block.
    3. Thread C commits; T drains (T_LOCKED), waiting for A.
-   4. The file pager writes B; the write is held in store_write, after
+   4. The file pager evicts B; the write is held in store_write, after
       the hazard check.
-   5. A reserves B in T and edits it.
-   6. The write is let go, and its notification comes in.
+   5. A reserves B in T.
+   6. The write is let go, and its notification comes in.  A edits B,
+      which faults it back in: the edit waits for the write.
    7. A hands the journal B's image, and stops; the commit finishes.
    Then the edit must be home after a clean unmount, and in every crash
    image after the commit returned.  */
@@ -144,18 +145,19 @@ main (int argc, char **argv)
     pthread_cond_wait (&hold_cond, &hold_lock);
   pthread_mutex_unlock (&hold_lock);
 
-  /* 5.  A reserves B in the draining T and edits it.  */
+  /* 5.  A reserves B in the draining T.  */
   CHECK (jt_txn_locked (txn_t), "T is no longer draining");
   char buf[block_size];
   CHECK (!journal_get_write_access_external (txn_t, dir), "reserve in T");
-  pattern (buf, dir, 2);
-  jt_dir_edit (dir, 0, buf, block_size);
 
-  /* 6.  The held write finishes, and the journal is told of it.  */
+  /* 6.  The held write finishes, and the journal is told of it; A's
+     edit.  */
   pthread_mutex_lock (&hold_lock);
   hold_released = 1;
   pthread_cond_broadcast (&hold_cond);
   pthread_mutex_unlock (&hold_lock);
+  pattern (buf, dir, 2);
+  jt_dir_edit (dir, 0, buf, block_size);
   jt_drain ();
   jt_store_write_hook = NULL;
 

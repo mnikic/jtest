@@ -4,12 +4,14 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "jtest.h"
@@ -490,6 +492,10 @@ struct cache
   /* As libpager's PM_INVALID: an evicted page whose write failed.  Its
      next page-in fails instead of reading what is on disk.  */
   unsigned char *invalid;
+  /* Disk cache only: a block that cannot leave, being written out as
+     if evicted (serve_pageout).  ext2fs's view of it is read-only
+     meanwhile, and a write to it waits for the write out.  */
+  unsigned char *held;
 };
 
 static struct cache dcache = { .name = "disk cache", .disk_cache = 1 };
@@ -580,6 +586,7 @@ cache_init (struct cache *c, char *mem, size_t nblocks)
   c->discarded = calloc (nblocks, 1);
   c->is_dir = calloc (nblocks, 1);
   c->invalid = calloc (nblocks, 1);
+  c->held = calloc (nblocks, 1);
 }
 
 /* Queue a request; with WAIT, wait for it and free it.  */
@@ -610,6 +617,77 @@ submit (enum req_kind kind, struct cache *c, block_t b, int wait)
   pthread_mutex_unlock (&req_lock);
 }
 
+/* An evicted page's write, for a page that cannot leave.  On Mach the
+   page is gone while it is written, and a fault on it waits for the
+   write (libpager's PM_PAGEINWAIT), then gets what was written.  Here
+   ext2fs's view of the page is read-only while it is written, and a
+   write to it waits in the SIGSEGV handler.  The page stays, holding
+   what was written: as after that page-in.  hyper.c makes the whole
+   view read-only on a switch to read-only, which mprotect below keeps
+   track of.  */
+static pthread_mutex_t prot_lock = PTHREAD_MUTEX_INITIALIZER;
+static int view_readonly;
+
+int
+mprotect (void *addr, size_t len, int prot)
+{
+  pthread_mutex_lock (&prot_lock);
+  int ret = syscall (SYS_mprotect, addr, len, prot);
+  if (ret == 0 && addr == disk_cache && len == (size_t) disk_cache_size)
+    {
+      __atomic_store_n (&view_readonly, !(prot & PROT_WRITE),
+			__ATOMIC_RELEASE);
+      if (!view_readonly)
+	for (block_t b = 0; b < (block_t) disk_cache_blocks; b++)
+	  if (__atomic_load_n (&dcache.held[b], __ATOMIC_ACQUIRE))
+	    syscall (SYS_mprotect, eslot (b), block_size, PROT_READ);
+    }
+  pthread_mutex_unlock (&prot_lock);
+  return ret;
+}
+
+static void
+view_hold (block_t b)
+{
+  pthread_mutex_lock (&prot_lock);
+  __atomic_store_n (&dcache.held[b], 1, __ATOMIC_RELEASE);
+  syscall (SYS_mprotect, eslot (b), block_size, PROT_READ);
+  pthread_mutex_unlock (&prot_lock);
+}
+
+static void
+view_release (block_t b)
+{
+  pthread_mutex_lock (&prot_lock);
+  syscall (SYS_mprotect, eslot (b), block_size,
+	   PROT_READ | (view_readonly ? 0 : PROT_WRITE));
+  __atomic_store_n (&dcache.held[b], 0, __ATOMIC_RELEASE);
+  pthread_mutex_unlock (&prot_lock);
+}
+
+static void
+held_fault (int sig, siginfo_t *si, void *ctx)
+{
+  (void) ctx;
+  char *a = si->si_addr;
+  if (disk_cache && a >= (char *) disk_cache
+      && a < (char *) disk_cache + disk_cache_size)
+    {
+      block_t b = (a - (char *) disk_cache) >> log2_block_size;
+      /* The view is writable, so the page is or was held: the fault can
+	 come in after view_release.  */
+      if (!__atomic_load_n (&view_readonly, __ATOMIC_ACQUIRE))
+	{
+	  struct timespec ts = { 0, 50000 };
+	  while (__atomic_load_n (&dcache.held[b], __ATOMIC_ACQUIRE))
+	    nanosleep (&ts, NULL);
+	  return;		/* The write is retried.  */
+	}
+    }
+  /* A real fault: let it kill us.  */
+  signal (sig, SIG_DFL);
+}
+
 /* Like libpager's data-return: writes of a block are serialized, and a
    page-in that comes while the block is being written out waits, and
    gets the data being written.  */
@@ -620,13 +698,19 @@ serve_pageout (struct cache *c, block_t b, int evict)
   size_t amount = 0;
   error_t err;
 
+  int hold = 0;
+
   pthread_mutex_lock (&page_lock);
   while (c->paging_out[b])
     pthread_cond_wait (&page_out_done, &page_lock);
   if (evict && c->disk_cache
       && (disk_cache_info[b].ref_count || b < group_desc_block_end))
-    /* balloc.c writes such blocks without faulting: they stay.  */
-    evict = 0;
+    {
+      /* balloc.c writes such blocks without faulting: they stay, held
+	 while written (view_hold).  */
+      evict = 0;
+      hold = 1;
+    }
   if (!c->resident[b] || !c->dirty[b])
     {
       /* Mach drops a clean page without writing it.  */
@@ -640,6 +724,8 @@ serve_pageout (struct cache *c, block_t b, int evict)
       free (buf);
       return;
     }
+  if (hold)
+    view_hold (b);
   memcpy (buf, cslot (c, b), block_size);
   c->dirty[b] = 0;
   if (evict)
@@ -656,7 +742,7 @@ serve_pageout (struct cache *c, block_t b, int evict)
 	seed = (unsigned) (uintptr_t) &seed;
       usleep (rand_r (&seed) % pageout_delay_us);
     }
-  keeps_page = !evict;
+  keeps_page = !evict && !hold;
   err = journal_store_write (b, block_size, buf, &amount, c->disk_cache);
   if (err || amount != block_size)
     ext2_warning ("jtest: %s page-out of block %u failed: %s", c->name, b,
@@ -667,6 +753,8 @@ serve_pageout (struct cache *c, block_t b, int evict)
     c->invalid[b] = 1;
   if (!c->disk_cache)
     jt_trace (b, "page-out: written", NULL);
+  if (hold)
+    view_release (b);
   c->paging_out[b] = 0;
   if (c->pagein_wait[b])
     {
@@ -824,6 +912,8 @@ cache_edit (struct cache *c, block_t b, size_t off, const void *data,
   assert_backtrace (off + len <= block_size);
   pthread_mutex_lock (&page_lock);
   fault_locked (c, b);
+  while (c->held[b])
+    pthread_cond_wait (&page_out_done, &page_lock);
   memcpy (cslot (c, b) + off, data, len);
   c->dirty[b] = 1;
   if (!c->disk_cache)
@@ -852,10 +942,25 @@ jt_read (block_t b, void *out)
   cache_read (&dcache, b, out);
 }
 
+/* With a journal, ext2fs never syncs the disk pager, nor a directory's
+   pager, until the journal stops (sync_global there, pager_shutdown):
+   pokels are flushed, not synced, and diskfs_file_update,
+   diskfs_sync_everything and drop_pager_softrefs leave directories out.
+   The kernel writes a page and keeps it only for such a sync (a lock
+   request that does not flush); its own page-outs evict.  So a page-out
+   of a journaled block while the journal runs is an eviction: a kept
+   one's copy could be written after newer bytes went home, and their
+   transaction retired.  */
+static int
+pageout_evicts (int evict)
+{
+  return evict || ext2_journal;
+}
+
 void
 jt_pageout (block_t b, int evict, int wait)
 {
-  submit (evict ? REQ_EVICT : REQ_CLEAN, &dcache, b, wait);
+  submit (pageout_evicts (evict) ? REQ_EVICT : REQ_CLEAN, &dcache, b, wait);
 }
 
 void
@@ -959,7 +1064,8 @@ jt_dir_read (block_t b, void *out)
 void
 jt_dir_pageout (block_t b, int evict, int wait)
 {
-  submit (evict ? REQ_EVICT : REQ_CLEAN, &dirpager, b, wait);
+  submit (pageout_evicts (evict) ? REQ_EVICT : REQ_CLEAN, &dirpager, b,
+	  wait);
 }
 
 error_t
@@ -1418,6 +1524,11 @@ jt_mount (const char *image, int npagers, int flags)
   if (getenv ("JT_PAGEOUT_DELAY"))
     pageout_delay_us = atoi (getenv ("JT_PAGEOUT_DELAY"));
   load_image (image);
+  {
+    struct sigaction sa = { .sa_sigaction = held_fault,
+			    .sa_flags = SA_SIGINFO | SA_NODEFER };
+    sigaction (SIGSEGV, &sa, NULL);
+  }
 
   sb = (struct ext2_super_block *) (store_mem + SBLOCK_OFFS);
   if (le16toh (sb->s_magic) != EXT2_SUPER_MAGIC
