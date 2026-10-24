@@ -295,8 +295,8 @@ owner (void *arg)
 	  f->slot[s] = b;
 	  /* Its data goes home soon: writeback mode does not wait for the
 	     allocation to commit.  */
-	  jt_dir_edit (b, 0, data, block_size);
-	  jt_dir_pageout (b, 1, 0);
+	  jt_file_edit (b, 0, data, block_size);
+	  jt_file_pageout (b, 1, 0);
 	  if (s >= EXT2_NDIR_BLOCKS)
 	    edit_word (txn, f->ind, (s - EXT2_NDIR_BLOCKS) * 4, b);
 	  __atomic_add_fetch (&n_alloc, 1, __ATOMIC_RELAXED);
@@ -358,8 +358,8 @@ owner (void *arg)
       for (int s = 0; s < NSLOT; s++)
 	if (f->slot[s] && rand () % 4 == 0)
 	  {
-	    jt_dir_edit (f->slot[s], 0, data, block_size);
-	    jt_dir_pageout (f->slot[s], rand () % 2, 0);
+	    jt_file_edit (f->slot[s], 0, data, block_size);
+	    jt_file_pageout (f->slot[s], rand () % 2, 0);
 	  }
     }
   /* The last close gives the window back.  */

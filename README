@@ -74,6 +74,13 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                over.  Crash images must be e2fsck clean, the superblock's
                free count that of the groups, and each file in the state
                of one of its operations.  Runs on build/balloc.img.
+               t_sync: diskfs_sync_everything at any moment
+               (jt_sync_everything mirrors pager.c with a journal): while
+               a commit drains, while the pager serves faults, waiting or
+               not, and with nothing to write while another commit is
+               still writing.  Every operation stopped before a sync that
+               returned, the inodes it wrote, and with a waiting sync the
+               file data written before it, must survive any crash.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.
@@ -109,7 +116,9 @@ journal_mark_dirty each set needs_copy again, and the last handle to
 stop sweeps again.  t_sweep_race forces it and checks that.
 
 jt_pager_call runs a callback on a pager thread, for the pager
-callbacks that start transactions.
+callbacks that start transactions.  jt_file_* write file data through
+the file pager; jt_dir_* mark the block as a directory's, which
+jt_sync_everything does not write out when there is a journal.
 
 For balloc.c, the harness has the rest of ext2fs it needs: a separate
 in-core superblock with hyper.c's journaled diskfs_set_hypermetadata

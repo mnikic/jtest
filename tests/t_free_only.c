@@ -115,8 +115,8 @@ main (int argc, char **argv)
   jt_discard (b_blk, 0);
   jt_discard (b_blk, 1);
   pattern (buf, b_blk, DATA_WORD);
-  jt_dir_edit (b_blk, 0, buf, block_size);
-  jt_dir_pageout (b_blk, 1, 1);
+  jt_file_edit (b_blk, 0, buf, block_size);
+  jt_file_pageout (b_blk, 1, 1);
   data_written_at = jt_log_count ();
 
   /* 4.  */

@@ -446,6 +446,8 @@ struct cache
   /* Discarded for a new owner: what the slot holds is no one's, and
      the next page-in is not checked against it.  */
   unsigned char *discarded;
+  /* File pager only: the block is a directory's, not file data.  */
+  unsigned char *is_dir;
 };
 
 static struct cache dcache = { .name = "disk cache", .disk_cache = 1 };
@@ -467,6 +469,7 @@ struct req
   block_t block;
   int wait;
   int done;
+  unsigned long *group;		/* Counted down when served, if set.  */
   struct req *next;
 };
 
@@ -509,6 +512,7 @@ cache_init (struct cache *c, char *mem, size_t nblocks)
   c->paging_out = calloc (nblocks, 1);
   c->pagein_wait = calloc (nblocks, 1);
   c->discarded = calloc (nblocks, 1);
+  c->is_dir = calloc (nblocks, 1);
 }
 
 /* Queue a request; with WAIT, wait for it and free it.  */
@@ -698,6 +702,8 @@ pager_thread (void *arg)
 
       pthread_mutex_lock (&req_lock);
       in_flight--;
+      if (r->group)
+	--*r->group;
       if (r->wait)
 	r->done = 1;
       else
@@ -807,7 +813,31 @@ jt_pager_call (void (*fn) (void *), void *arg)
 void
 jt_dir_edit (block_t b, size_t off, const void *data, size_t len)
 {
+  pthread_mutex_lock (&page_lock);
+  dirpager.is_dir[b] = 1;
+  pthread_mutex_unlock (&page_lock);
   cache_edit (&dirpager, b, off, data, len);
+}
+
+void
+jt_file_edit (block_t b, size_t off, const void *data, size_t len)
+{
+  pthread_mutex_lock (&page_lock);
+  dirpager.is_dir[b] = 0;
+  pthread_mutex_unlock (&page_lock);
+  cache_edit (&dirpager, b, off, data, len);
+}
+
+void
+jt_file_read (block_t b, void *out)
+{
+  cache_read (&dirpager, b, out);
+}
+
+void
+jt_file_pageout (block_t b, int evict, int wait)
+{
+  submit (evict ? REQ_EVICT : REQ_CLEAN, &dirpager, b, wait);
 }
 
 void
@@ -858,6 +888,67 @@ jt_sync_all (void)
 {
   sync_cache (&dirpager);
   sync_cache (&dcache);
+}
+
+void (*jt_write_all_disknodes) (diskfs_transaction_t *txn);
+
+/* pager_sync of every file pager: write the dirty pages out, keeping
+   them; with WAIT, wait for the writes.  With a journal, directories are
+   left out, as their blocks are journaled.  */
+static void
+sync_file_pagers (int wait)
+{
+  block_t n = jt_nblocks ();
+  unsigned long pending = 0;
+
+  for (block_t b = 0; b < n; b++)
+    {
+      pthread_mutex_lock (&page_lock);
+      int d = dirpager.dirty[b] && !(ext2_journal && dirpager.is_dir[b]);
+      pthread_mutex_unlock (&page_lock);
+      if (!d)
+	continue;
+      struct req *r = calloc (1, sizeof *r);
+      r->kind = REQ_CLEAN;
+      r->cache = &dirpager;
+      r->block = b;
+      pthread_mutex_lock (&req_lock);
+      if (wait)
+	{
+	  r->group = &pending;
+	  pending++;
+	}
+      in_flight++;
+      *req_tail = r;
+      req_tail = &r->next;
+      pthread_cond_signal (&req_ready);
+      pthread_mutex_unlock (&req_lock);
+    }
+  pthread_mutex_lock (&req_lock);
+  while (pending)
+    pthread_cond_wait (&req_done, &req_lock);
+  pthread_mutex_unlock (&req_lock);
+}
+
+void
+jt_sync_everything (int wait)
+{
+  /* pager.c: commit the inodes first, then sync the file pagers with no
+     handle held.  */
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  if (jt_write_all_disknodes)
+    jt_write_all_disknodes (txn);
+  diskfs_journal_commit_transaction (txn);
+
+  sync_file_pagers (wait);
+
+  /* pokel_sync_or_release: with a journal the global pokel is only
+     released.  The commit's flush came before the file data.  */
+  if (wait)
+    store_sync (store);
+
+  /* sync-interval.c, after diskfs_sync_everything.  */
+  diskfs_set_hypermetadata (0, 0);
 }
 
 void

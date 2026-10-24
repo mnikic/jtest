@@ -80,6 +80,22 @@ void jt_dir_pageout (block_t b, int evict, int wait);
    that changes owner.  */
 void jt_discard (block_t b, int file_pager);
 
+/* The same, for file data in the file pager: not journaled, and
+   written out by jt_sync_everything (directories are not, with a
+   journal).  jt_dir_edit marks a block as a directory's, jt_file_edit as
+   file data.  */
+void jt_file_edit (block_t b, size_t off, const void *data, size_t len);
+void jt_file_read (block_t b, void *out);
+void jt_file_pageout (block_t b, int evict, int wait);
+
+/* diskfs_sync_everything (WAIT) of pager.c with a journal, then the
+   diskfs_set_hypermetadata (0, 0) of the sync thread: a handle in which
+   jt_write_all_disknodes, if set, writes the inodes, committed; then
+   every file pager's dirty pages written out except directories', and
+   waited for with WAIT; then a store_sync with WAIT.  */
+void jt_sync_everything (int wait);
+extern void (*jt_write_all_disknodes) (diskfs_transaction_t *txn);
+
 /* journal_mark_dirty_external of directory block B, as the file pager's
    mapping has it.  */
 error_t jt_dir_mark_dirty (diskfs_transaction_t *txn, block_t b);

@@ -366,8 +366,8 @@ main (int argc, char **argv)
 	  {
 	    data_ver[k]++;
 	    data_pattern (buf, pool[k], data_word (k));
-	    jt_dir_edit (pool[k], 0, buf, block_size);
-	    jt_dir_pageout (pool[k], rand () % 2, rand () % 2);
+	    jt_file_edit (pool[k], 0, buf, block_size);
+	    jt_file_pageout (pool[k], rand () % 2, rand () % 2);
 	  }
     }
 
