@@ -1464,6 +1464,45 @@ jt_umount (void)
   return jt_warnings;
 }
 
+/* libports' RPC inhibition, for the protid class: held from the inhibit
+   to the resume, as no RPC runs meanwhile.  */
+struct port_class *diskfs_protid_class;
+int jt_inhibit_busy;
+static pthread_mutex_t inhibit_lock = PTHREAD_MUTEX_INITIALIZER;
+static int ro_at_inhibit, ro_set_inhibited;
+
+error_t
+ports_inhibit_class_rpcs (struct port_class *class)
+{
+  pthread_mutex_lock (&inhibit_lock);
+  if (jt_inhibit_busy > 0)
+    {
+      jt_inhibit_busy--;
+      pthread_mutex_unlock (&inhibit_lock);
+      return EBUSY;
+    }
+  ro_at_inhibit = diskfs_readonly;
+  return 0;
+}
+
+void
+ports_resume_class_rpcs (struct port_class *class)
+{
+  if (!ro_at_inhibit && diskfs_readonly)
+    ro_set_inhibited = 1;
+  pthread_mutex_unlock (&inhibit_lock);
+}
+
+int
+jt_readonly (int *inhibited)
+{
+  pthread_mutex_lock (&inhibit_lock);
+  int ro = diskfs_readonly;
+  *inhibited = ro_set_inhibited;
+  pthread_mutex_unlock (&inhibit_lock);
+  return ro;
+}
+
 int
 jt_journal_check (void)
 {

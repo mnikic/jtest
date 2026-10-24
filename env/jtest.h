@@ -63,6 +63,11 @@ void jt_read (block_t b, void *out);
 void jt_pageout (block_t b, int evict, int wait);
 /* journal_check on the journal as the store now has it.  */
 int jt_journal_check (void);
+/* diskfs_readonly, and in *INHIBITED whether it was set while the protid
+   RPCs were inhibited.  */
+int jt_readonly (int *inhibited);
+/* How many ports_inhibit_class_rpcs calls to come fail with EBUSY.  */
+extern int jt_inhibit_busy;
 
 /* The same for directory blocks, whose live copy is in a directory's
    file pager instead of the disk cache.  The file pager writes them

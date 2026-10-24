@@ -81,6 +81,7 @@ run (const char *image, unsigned seed)
     fail_at = 200;
   CHECK (!aborts || JT_COMMIT_RETURNS, "%s needs a "
 	 "diskfs_journal_commit_transaction that returns its error", kind);
+  jt_inhibit_busy = 1;
   srand (seed);
   jt_mount (image, 2, 0);
   pick_free_blocks (blocks, NBLK);
@@ -130,10 +131,19 @@ run (const char *image, unsigned seed)
 	jt_pageout (blocks[rand () % NBLK], rand () % 2, 0);
     }
 
+  /* kjournald makes the filesystem read-only, with the RPCs inhibited;
+     the first try finds them inhibited already, and it tries again on
+     its next tick.  */
+  int ro, inhibited, waited = 0;
+  while (!(ro = jt_readonly (&inhibited)) && aborts && waited++ < 150)
+    usleep (100000);
   if (aborts)
-    CHECK (diskfs_readonly, "not read-only after the %s write failed", kind);
+    {
+      CHECK (ro, "not read-only after the %s write failed", kind);
+      CHECK (inhibited, "read-only, but not with the RPCs inhibited");
+    }
   else
-    CHECK (!diskfs_readonly, "read-only after a failed %s write", kind);
+    CHECK (!ro, "read-only after a failed %s write", kind);
   warnings = jt_umount ();
   jt_store_fail_hook = NULL;
   jt_save_image ("build/t_ioerr.img");
