@@ -28,10 +28,12 @@ not_here (const char *what)
 	       "pager, or a truncation inside a block");
 }
 
+/* libdiskfs's, without the first write of the superblock it makes on a
+   clean filesystem.  */
 int
 diskfs_check_readonly (void)
 {
-  return 0;
+  return diskfs_readonly;
 }
 
 void

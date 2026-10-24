@@ -74,6 +74,11 @@ int jt_journal_check (void);
 /* diskfs_readonly, and in *INHIBITED whether it was set while the protid
    RPCs were inhibited.  */
 int jt_readonly (int *inhibited);
+/* An RPC of the protid class: ports_inhibit_class_rpcs waits for those
+   in flight, and new ones wait for its resume.  Not to be nested, nor
+   called from jt_readonly's thread while in one.  */
+void jt_rpc_begin (void);
+void jt_rpc_end (void);
 /* How many ports_inhibit_class_rpcs calls to come fail with EBUSY.  */
 extern int jt_inhibit_busy;
 

@@ -1493,16 +1493,45 @@ jt_umount (void)
   return jt_warnings;
 }
 
-/* libports' RPC inhibition, for the protid class: held from the inhibit
-   to the resume, as no RPC runs meanwhile.  */
+/* libports' RPC inhibition, for the protid class.  A test's RPCs hold
+   RPC_LOCK for reading (jt_rpc_begin); the inhibit takes it for writing,
+   so it waits for those in flight, and new ones wait for the resume.
+   Writers come first, as new RPCs wait while an inhibit does.  libports
+   also cancels the RPCs in flight, which is not done here.  */
 struct port_class *diskfs_protid_class;
 int jt_inhibit_busy;
 static pthread_mutex_t inhibit_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_rwlock_t rpc_lock;
 static int ro_at_inhibit, ro_set_inhibited;
+
+static void __attribute__ ((constructor))
+rpc_lock_init (void)
+{
+  pthread_rwlockattr_t attr;
+
+  pthread_rwlockattr_init (&attr);
+  pthread_rwlockattr_setkind_np
+    (&attr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
+  pthread_rwlock_init (&rpc_lock, &attr);
+  pthread_rwlockattr_destroy (&attr);
+}
+
+void
+jt_rpc_begin (void)
+{
+  pthread_rwlock_rdlock (&rpc_lock);
+}
+
+void
+jt_rpc_end (void)
+{
+  pthread_rwlock_unlock (&rpc_lock);
+}
 
 error_t
 ports_inhibit_class_rpcs (struct port_class *class)
 {
+  (void) class;
   pthread_mutex_lock (&inhibit_lock);
   if (jt_inhibit_busy > 0)
     {
@@ -1510,6 +1539,8 @@ ports_inhibit_class_rpcs (struct port_class *class)
       pthread_mutex_unlock (&inhibit_lock);
       return EBUSY;
     }
+  pthread_mutex_unlock (&inhibit_lock);
+  pthread_rwlock_wrlock (&rpc_lock);
   ro_at_inhibit = diskfs_readonly;
   return 0;
 }
@@ -1517,18 +1548,19 @@ ports_inhibit_class_rpcs (struct port_class *class)
 void
 ports_resume_class_rpcs (struct port_class *class)
 {
+  (void) class;
   if (!ro_at_inhibit && diskfs_readonly)
     ro_set_inhibited = 1;
-  pthread_mutex_unlock (&inhibit_lock);
+  pthread_rwlock_unlock (&rpc_lock);
 }
 
 int
 jt_readonly (int *inhibited)
 {
-  pthread_mutex_lock (&inhibit_lock);
+  pthread_rwlock_rdlock (&rpc_lock);
   int ro = diskfs_readonly;
   *inhibited = ro_set_inhibited;
-  pthread_mutex_unlock (&inhibit_lock);
+  pthread_rwlock_unlock (&rpc_lock);
   return ro;
 }
 
