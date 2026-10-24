@@ -233,7 +233,7 @@ MUTANTS = [
             why="a commit returns before its commit block is on disk"),
     # Failed home writes (jtest coverage gaps).
     Mutant ("run-claims-kept", J,
-            """	  if (actual_blocks < flush_count)
+            """	  if (actual_blocks < flush_count && ext2_journal == journal)
 	    journal_clear_flushing_locked (b + actual_blocks,
 					   flush_count - actual_blocks);""",
             """	  if (0)
