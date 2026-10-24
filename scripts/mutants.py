@@ -250,6 +250,17 @@ MUTANTS = [
       JRNL_LOG_WARN ("[QUIESCE] I/O error""",
             "t_wrap", ["ckpt-umount"],
             why="a failed checkpoint at the unmount leaves the journal clean"),
+    # An edit without a reservation while the commit writes the log.
+    Mutant ("late-edit-into-commit", J,
+            """      else if (!jb_run && commit->t_state == T_FLUSHING)""",
+            """      else if (0)""",
+            "t_late_edit",
+            why="the page goes into the shadow the commit is writing"),
+    Mutant ("late-edit-dropped", J,
+            """	      if (run && !journal_get_write_access_locked (run, b, !external))""",
+            """	      if (0)""",
+            "t_late_edit",
+            why="the edit is not carried into the next transaction"),
 ]
 
 

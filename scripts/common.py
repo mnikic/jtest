@@ -9,7 +9,8 @@ import time
 JTEST = os.path.dirname (os.path.dirname (os.path.abspath (__file__)))
 
 # Tests that take no seed: one run is all there is.
-DETERMINISTIC = {"t_forget_race", "t_free_only", "t_logfmt", "t_notify_race",
+DETERMINISTIC = {"t_forget_race", "t_free_only", "t_late_edit", "t_logfmt",
+                 "t_notify_race",
                  "t_sweep_race"}
 
 IMAGES = ("base.img", "balloc.img", "big.img")
