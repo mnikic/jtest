@@ -70,8 +70,12 @@ $(BALLOC_TESTS): $(B)/t_balloc%: tests/t_balloc%.c tests/common.h $(ENV) \
 $(B)/getblk.o: $(HURD)/ext2fs/getblk.c | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
+# truncate.c's nested functions have trampolines on the stack, which
+# ASan's fake stacks (use-after-return) would put on the heap.
+TRUNC_CFLAGS = $(if $(findstring address,$(SAN)),\
+		 --param asan-use-after-return=0)
 $(B)/truncate.o: $(HURD)/ext2fs/truncate.c | $(B)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(TRUNC_CFLAGS) -c -o $@ $<
 
 $(B)/ext2glue.o: env/ext2glue.c env/jtest.h | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
