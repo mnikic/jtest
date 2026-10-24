@@ -1,0 +1,21 @@
+--- a/ext2fs/journal.c
++++ b/ext2fs/journal.c
+@@ -4385,6 +4385,18 @@
+   /* The reference journal_create took.  */
+   if (jnode)
+     diskfs_nrele (jnode);
++
++  /* diskfs_journal_shutdown has taken it out of ext2_journal, and
++     kjournald is gone.  A journal started again, when the filesystem
++     becomes writable, is a new one.  */
++  pthread_mutex_destroy (&journal->j_state_lock);
++  pthread_cond_destroy (&journal->j_commit_wait);
++  pthread_cond_destroy (&journal->j_flush_wait);
++  pthread_cond_destroy (&journal->j_running_wait);
++  pthread_cond_destroy (&journal->j_commit_done);
++  pthread_cond_destroy (&journal->j_flusher_wakeup);
++  pthread_cond_destroy (&journal->j_checkpoint_done);
++  free (journal);
+ }
+ 
+ void

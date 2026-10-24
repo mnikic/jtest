@@ -46,7 +46,8 @@ EXT2_OBJS = $(B)/balloc.o $(B)/getblk.o $(B)/truncate.o $(B)/ext2glue.o \
 	    $(B)/nodeglue.o
 # Tests on the real inode.c, ialloc.c, orphan.c and hyper.c too, and
 # libdiskfs's node cache, references and drop.
-INODE_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_orphan*.c))
+INODE_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_orphan*.c \
+					       tests/t_rwcycle*.c))
 LIBDISKFS_NODE = node-cache node-drop node-nput node-nputl node-nref \
 		 node-nrefl node-nrele node-nrelel node-make node-update \
 		 node-times node-lastref node-create validate-owner \
@@ -123,7 +124,7 @@ $(B)/ld-node-create.o: $(NODE_CREATE_C) | $(B)
 $(B)/ld-%.o: $(HURD)/libdiskfs/%.c | $(B)
 	$(CC) $(CPPFLAGS) -I$(HURD)/libdiskfs $(CFLAGS) -c -o $@ $<
 
-$(INODE_TESTS): $(B)/t_orphan%: tests/t_orphan%.c tests/common.h $(ENV) \
+$(INODE_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
 		$(INODE_OBJS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(INODE_OBJS) $(LDFLAGS) \
 	  -Wl,--no-warn-execstack
@@ -156,7 +157,7 @@ $(B)/balloc.img: | $(B)
 
 check: all
 	@for t in $(TESTS); do \
-	  case $$t in *t_balloc*|*t_trunc*|*t_orphan*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
+	  case $$t in *t_balloc*|*t_trunc*|*t_orphan*|*t_rwcycle*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
 	  $$t $$img 2>$$t.log || { tail -40 $$t.log; echo "FAIL: $$t (log: $$t.log)"; exit 1; }; \
 	done
 

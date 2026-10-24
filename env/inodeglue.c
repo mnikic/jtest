@@ -189,8 +189,23 @@ store_clear_flags (struct store *s, int flags)
   return 0;
 }
 
+/* ext2fs.c's, for a filesystem made writable again.  */
 void
 ext2_start_journal (void)
 {
-  _ext2_panic (__func__, "not available in the harness");
+  struct node *jnode = NULL;
+
+  if (diskfs_cached_lookup (sblock->s_journal_inum, &jnode) || !jnode)
+    {
+      ext2_warning ("cannot find the journal inode; journaling disabled");
+      return;
+    }
+
+  ext2_journal = journal_create (jnode);
+  diskfs_nput (jnode);
+  if (!ext2_journal)
+    return;
+
+  /* Before anything is journaled.  */
+  ext2_set_needs_recovery ();
 }

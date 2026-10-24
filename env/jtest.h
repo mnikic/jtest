@@ -61,6 +61,14 @@ void jt_read (block_t b, void *out);
    evicting it (EVICT 1).  A clean block is not written.  With WAIT, wait
    until it is done.  */
 void jt_pageout (block_t b, int evict, int wait);
+/* An ext2_warning whose format contains this is not counted as one of
+   jt_umount's warnings.  */
+extern const char *jt_expected_warning;
+
+/* Blocks whose latest version, in the disk cache or the directory
+   pager, is not on disk: how many in *COUNT, and the first.  Journal
+   blocks are not counted.  */
+block_t jt_unwritten (size_t *count);
 /* journal_check on the journal as the store now has it.  */
 int jt_journal_check (void);
 /* diskfs_readonly, and in *INHIBITED whether it was set while the protid

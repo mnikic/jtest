@@ -63,6 +63,7 @@ void (*jt_ref_mapped_hook) (block_t b);
 
 static int jt_flags;
 static unsigned long jt_warnings;
+const char *jt_expected_warning;
 
 /* ---------------------------------------------------------------- */
 /* Reporting.  */
@@ -72,7 +73,8 @@ ext2_warning (const char *fmt, ...)
 {
   va_list ap;
 
-  __atomic_add_fetch (&jt_warnings, 1, __ATOMIC_RELAXED);
+  if (!jt_expected_warning || !strstr (fmt, jt_expected_warning))
+    __atomic_add_fetch (&jt_warnings, 1, __ATOMIC_RELAXED);
   if (jt_flags & JT_QUIET)
     return;
   va_start (ap, fmt);
@@ -534,6 +536,16 @@ static char *
 slot (block_t b)
 {
   return cslot (&dcache, b);
+}
+
+/* The same page as ext2fs sees it: at disk_cache, a second mapping of
+   the pages at dcache.mem.  ext2fs may make it read-only
+   (diskfs_readonly_changed), while the pager here still writes its
+   page-ins through the first.  Pointers handed to ext2fs are these.  */
+static char *
+eslot (block_t b)
+{
+  return (char *) disk_cache + ((size_t) b << log2_block_size);
 }
 
 static void
@@ -1060,7 +1072,7 @@ disk_cache_block_ref_mapped (block_t block)
   pthread_mutex_lock (&page_lock);
   ref_block (block);
   pthread_mutex_unlock (&page_lock);
-  return slot (block);
+  return eslot (block);
 }
 
 void *
@@ -1070,7 +1082,7 @@ disk_cache_block_ref (block_t block)
   fault_locked (&dcache, block);
   ref_block (block);
   pthread_mutex_unlock (&page_lock);
-  return slot (block);
+  return eslot (block);
 }
 
 void
@@ -1391,25 +1403,35 @@ jt_mount (const char *image, int npagers, int flags)
   nblocks = store_bytes >> log2_block_size;
   disk_cache_size = (store_offset_t) nblocks << log2_block_size;
   disk_cache_blocks = nblocks;
-  disk_cache = aligned_alloc (vm_page_size, disk_cache_size);
-  memcpy (disk_cache, store_mem, disk_cache_size);
-  cache_init (&dcache, disk_cache, nblocks);
+  {
+    int fd = memfd_create ("jtest disk cache", 0);
+    char *own;
+    CHECK_ADD (fd < 0 || ftruncate (fd, disk_cache_size));
+    disk_cache = mmap (NULL, disk_cache_size, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, 0);
+    own = mmap (NULL, disk_cache_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+		fd, 0);
+    CHECK_ADD (disk_cache == MAP_FAILED || own == MAP_FAILED);
+    close (fd);
+    memcpy (own, store_mem, disk_cache_size);
+    cache_init (&dcache, own, nblocks);
+  }
   disk_cache_info = calloc (nblocks, sizeof *disk_cache_info);
   hurd_ihash_create (&disk_cache_bptr, HURD_IHASH_NO_LOCP);
   for (block_t b = 0; b < nblocks; b++)
     {
       disk_cache_info[b].block = b;
       disk_cache_info[b].flags = DC_INCORE;
-      CHECK_ADD (hurd_ihash_add (disk_cache_bptr, b, slot (b)));
+      CHECK_ADD (hurd_ihash_add (disk_cache_bptr, b, eslot (b)));
     }
   cache_init (&dirpager, malloc (disk_cache_size), nblocks);
   memcpy (dirpager.mem, store_mem, disk_cache_size);
 
-  mapped_sblock = (struct ext2_super_block *) (slot (boffs_block (SBLOCK_OFFS))
+  mapped_sblock = (struct ext2_super_block *) (eslot (boffs_block (SBLOCK_OFFS))
 					       + SBLOCK_OFFS % block_size);
   sblock = malloc (SBLOCK_SIZE);
   memcpy (sblock, mapped_sblock, SBLOCK_SIZE);
-  group_desc_image = (struct ext2_group_desc *) slot (group_desc_block);
+  group_desc_image = (struct ext2_group_desc *) eslot (group_desc_block);
   {
     size_t isize = le32toh (sblock->s_rev_level)
       ? le16toh (sblock->s_inode_size) : 128;
@@ -1508,6 +1530,34 @@ jt_readonly (int *inhibited)
   *inhibited = ro_set_inhibited;
   pthread_mutex_unlock (&inhibit_lock);
   return ro;
+}
+
+block_t
+jt_unwritten (size_t *count)
+{
+  block_t first = 0;
+
+  *count = 0;
+  pthread_mutex_lock (&page_lock);
+  for (block_t b = 0; b < (block_t) (store_bytes >> log2_block_size); b++)
+    {
+      const char *mine = NULL;
+      if (in_journal[b])
+	continue;
+      if (dirpager.is_dir[b] && dirpager.resident[b])
+	mine = cslot (&dirpager, b);
+      else if (dcache.resident[b] && !dcache.discarded[b]
+	       && !dirpager.is_dir[b])
+	mine = cslot (&dcache, b);
+      if (mine && memcmp (mine, store_mem + ((size_t) b << log2_block_size),
+			  block_size))
+	{
+	  if (!(*count)++)
+	    first = b;
+	}
+    }
+  pthread_mutex_unlock (&page_lock);
+  return first;
 }
 
 int
