@@ -66,7 +66,7 @@ INODE_OBJS = $(B)/balloc.o $(B)/getblk.o $(B)/truncate.o $(B)/ext2glue.o \
 	     $(B)/hyper.o $(patsubst %,$(B)/ld-%.o,$(LIBDISKFS_NODE)) \
 	     $(B)/idvec.o
 
-all: $(TESTS) $(B)/base.img $(B)/balloc.img $(B)/big.img
+all: $(TESTS) $(B)/base.img $(B)/balloc.img $(B)/big.img $(B)/full.img
 
 $(B):
 	mkdir -p $@
@@ -92,8 +92,8 @@ $(B)/balloc.o: $(BALLOC_C) | $(B)
 
 # The real allocator, for the t_balloc* tests; the others keep the
 # harness's ext2_release_busy_blocks.
-$(BALLOC_TESTS): $(B)/t_balloc%: tests/t_balloc%.c tests/common.h $(ENV) \
-		 $(B)/balloc.o
+$(BALLOC_TESTS): $(B)/t_balloc%: tests/t_balloc%.c tests/t_balloc.c \
+		 tests/common.h $(ENV) $(B)/balloc.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(B)/balloc.o $(LDFLAGS)
 
 $(B)/getblk.o: $(HURD)/ext2fs/getblk.c | $(B)
@@ -162,11 +162,20 @@ $(B)/balloc.img: | $(B)
 	mke2fs -q -F -t ext3 -o hurd -b 4096 -g 1024 -N 128 $@ 16M
 	debugfs -w -R "write /dev/null pool0" $@ >/dev/null 2>&1
 	debugfs -w -R "write /dev/null pool1" $@ >/dev/null 2>&1
+
+# balloc.img with a file that takes all but a few dozen of its free
+# blocks (some go to the file's indirect blocks), for t_balloc_full.
+$(B)/full.img: $(B)/balloc.img
+	cp $< $@
+	n=$$(dumpe2fs -h $@ 2>/dev/null | awk '/^Free blocks:/ { print $$3 }'); \
+	  yes | head -c $$(( (n - 28) * 4096 )) >$@.data
+	debugfs -w -R "write $@.data filler" $@ >/dev/null 2>&1
+	rm -f $@.data
 	e2fsck -fn $@ >/dev/null
 
 check: all
 	@for t in $(TESTS); do \
-	  case $$t in *t_balloc*|*t_trunc*|*t_orphan*|*t_rwcycle*|*t_abortfiles*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
+	  case $$t in *t_balloc_full*) img=$(B)/full.img;; *t_balloc*|*t_trunc*|*t_orphan*|*t_rwcycle*|*t_abortfiles*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
 	  $$t $$img 2>$$t.log || { tail -40 $$t.log; echo "FAIL: $$t (log: $$t.log)"; exit 1; }; \
 	done
 

@@ -13,7 +13,7 @@ DETERMINISTIC = {"t_forget_race", "t_free_only", "t_late_edit", "t_logfmt",
                  "t_notify_race",
                  "t_sweep_race"}
 
-IMAGES = ("base.img", "balloc.img", "big.img")
+IMAGES = ("base.img", "balloc.img", "big.img", "full.img")
 
 
 def tests ():
@@ -23,6 +23,8 @@ def tests ():
 
 def image_for (test):
     """As make check picks it."""
+    if test.startswith ("t_balloc_full"):
+        return "full.img"
     for p in ("t_balloc", "t_trunc", "t_orphan", "t_rwcycle", "t_abortfiles"):
         if test.startswith (p):
             return "balloc.img"

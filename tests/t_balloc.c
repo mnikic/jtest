@@ -42,6 +42,11 @@
 #include <stddef.h>
 #include "common.h"
 
+/* t_balloc_full.c builds this test under its own name.  */
+#ifndef T_NAME
+#define T_NAME "t_balloc"
+#endif
+
 #define NT 2
 #define NSLOT 16		/* 12 direct, 4 in the indirect block, which
 				   is thus often freed.  */
@@ -459,7 +464,7 @@ int
 main (int argc, char **argv)
 {
   const char *image = argc > 1 ? argv[1] : "build/balloc.img";
-  const char *out = "build/t_balloc.img";
+  const char *out = "build/" T_NAME ".img";
   pthread_t threads[NT];
   unsigned long warnings;
 
@@ -487,12 +492,12 @@ main (int argc, char **argv)
   CHECK (warnings == 0, "%lu journal warnings", warnings);
   CHECK (jt_stale_reads () == 0, "%lu stale page-ins", jt_stale_reads ());
   jt_save_image (out);
-  CHECK (jt_run ("e2fsck -fn %s >build/t_balloc.fsck 2>&1", out) == 0,
-	 "e2fsck -fn %s is not clean after the unmount (see "
-	 "build/t_balloc.fsck)", out);
+  CHECK (jt_run ("e2fsck -fn %s >%s.fsck 2>&1", out, out) == 0,
+	 "e2fsck -fn %s is not clean after the unmount (see %s.fsck)", out,
+	 out);
 
-  size_t checked = jt_crash_check ("t_balloc", check, NULL);
-  printf ("t_balloc: OK (%s windows, %d threads x %d operations, "
+  size_t checked = jt_crash_check (T_NAME, check, NULL);
+  printf (T_NAME ": OK (%s windows, %d threads x %d operations, "
 	  "%lu allocations, %lu window hits, %lu frees, %lu ENOSPC, "
 	  "%lu filler commits, %zu writes, %zu crash images)\n",
 	  win_mode == WIN_RESERVED ? "reserved" : win_mode == WIN_OLD
