@@ -21,6 +21,18 @@
    copies leave the log and only the home copy of a block is left; a
    busy block reused too early then shows.
 
+   Allocations go through a model of getblk.c's ext2_alloc_block, with a
+   preallocation window per file, in the form the allocator linked in
+   has.  With prealloc-rsv's balloc.c (ext2_unreserve_blocks), the window
+   is a reservation in memory, and every allocation, a hit included,
+   goes through ext2_new_block; a file that uses up its window and goes
+   on sequentially gets one twice as big.  With JT_OLD_PREALLOC=1 and an
+   allocator that has ext2_free_unused_blocks, the window's blocks are
+   marked in the bitmap up front, as before d786df4c5 turned that off
+   with a journal: a crash then leaves them allocated and owned by no
+   one, which this test must catch.  Otherwise no window, as
+   shadow-intercept's getblk.c does with a journal.
+
    What must hold, after a replay: e2fsck -fn finds the image clean, so
    bitmaps, counts and inodes agree (jt_crash_check checks that); and
    each file holds the blocks it had after one of its operations, no
@@ -40,6 +52,68 @@ struct fstate
   uint32_t slot[NSLOT];
   uint32_t ind;
 };
+
+/* Present only in the allocators that have them.  */
+extern void ext2_unreserve_blocks (block_t, unsigned long)
+  __attribute__ ((weak));
+extern void ext2_free_unused_blocks (block_t, unsigned long)
+  __attribute__ ((weak));
+
+enum { WIN_NONE, WIN_RESERVED, WIN_OLD } win_mode;
+
+struct window
+{
+  block_t block;		/* i_prealloc_block */
+  block_t count;		/* i_prealloc_count */
+  block_t size;			/* i_prealloc_size */
+};
+static struct window win[NT];
+static unsigned long win_hits;
+
+/* ext2_discard_prealloc.  */
+static void
+discard_window (int t)
+{
+  if (!win[t].count)
+    return;
+  if (win_mode == WIN_RESERVED)
+    ext2_unreserve_blocks (win[t].block, win[t].count);
+  else
+    ext2_free_unused_blocks (win[t].block, win[t].count);
+  win[t].count = 0;
+}
+
+/* ext2_alloc_block's choice of block, for file T.  */
+static block_t
+alloc_block (int t, block_t goal)
+{
+  struct window *w = &win[t];
+  int sequential = goal == w->block || goal + 1 == w->block;
+
+  if (win_mode == WIN_NONE)
+    return ext2_new_block (goal, 0, 0, 0);
+
+  if (w->count && sequential)
+    {
+      win_hits++;
+      if (win_mode == WIN_OLD)
+	{
+	  /* The block is already marked allocated.  */
+	  w->count--;
+	  return w->block++;
+	}
+      goal = w->block;
+    }
+  else
+    {
+      discard_window (t);
+      if (win_mode == WIN_RESERVED && sequential && w->size)
+	w->size = w->size * 2 < 1024 ? w->size * 2 : 1024;
+      else
+	w->size = EXT2_DEFAULT_PREALLOC_BLOCKS;
+    }
+  return ext2_new_block (goal, w->size, &w->count, &w->block);
+}
 
 static ino_t inos[NT];
 static block_t itb[NT];		/* Inode table block.  */
@@ -173,7 +247,17 @@ owner (void *arg)
       /* Allocate.  */
       for (int i = rand () % 4; i > 0; i--)
 	{
+	  /* Mostly appends, as files are written: the next slot after
+	     the last one used, so that windows are hit and grow.  */
 	  int s = rand () % NSLOT;
+	  if (rand () % 4)
+	    {
+	      int last = -1;
+	      for (int k = 0; k < NSLOT; k++)
+		if (f->slot[k])
+		  last = k;
+	      s = last + 1 < NSLOT ? last + 1 : s;
+	    }
 	  if (f->slot[s])
 	    continue;
 	  /* Half of the time, the block the other thread freed last: taking
@@ -187,7 +271,7 @@ owner (void *arg)
 	    : s > 0 && f->slot[s - 1] ? f->slot[s - 1] + 1 : random_goal ();
 	  if (s >= EXT2_NDIR_BLOCKS && !f->ind)
 	    {
-	      block_t ind = ext2_new_block (goal, 0, 0, 0);
+	      block_t ind = alloc_block (t, goal);
 	      if (!ind)
 		{
 		  n_enospc++;
@@ -199,7 +283,7 @@ owner (void *arg)
 	      f->ind = ind;
 	      __atomic_add_fetch (&n_alloc, 1, __ATOMIC_RELAXED);
 	    }
-	  block_t b = ext2_new_block (goal, 0, 0, 0);
+	  block_t b = alloc_block (t, goal);
 	  if (!b)
 	    {
 	      n_enospc++;
@@ -218,7 +302,9 @@ owner (void *arg)
 	  __atomic_add_fetch (&n_alloc, 1, __ATOMIC_RELAXED);
 	}
 
-      /* Free.  */
+      /* Free, as a truncation, which drops the window.  */
+      if (rand () % 3 == 0)
+	discard_window (t);
       for (int i = rand () % 3; i > 0; i--)
 	{
 	  int s = rand () % NSLOT;
@@ -276,6 +362,10 @@ owner (void *arg)
 	    jt_dir_pageout (f->slot[s], rand () % 2, 0);
 	  }
     }
+  /* The last close gives the window back.  */
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  discard_window (t);
+  diskfs_journal_stop_transaction (txn);
   free (zero);
   free (data);
   return NULL;
@@ -374,6 +464,10 @@ main (int argc, char **argv)
   unsigned long warnings;
 
   srand (argc > 2 ? atoi (argv[2]) : 1);
+  if (ext2_unreserve_blocks)
+    win_mode = WIN_RESERVED;
+  else if (getenv ("JT_OLD_PREALLOC") && ext2_free_unused_blocks)
+    win_mode = WIN_OLD;
   inos[0] = lookup (image, "pool0");
   inos[1] = lookup (image, "pool1");
   jt_mount (image, 3, 0);
@@ -398,9 +492,11 @@ main (int argc, char **argv)
 	 "build/t_balloc.fsck)", out);
 
   size_t checked = jt_crash_check ("t_balloc", check, NULL);
-  printf ("t_balloc: OK (%d threads x %d operations, %lu allocations, "
-	  "%lu frees, %lu ENOSPC, %lu filler commits, %zu writes, "
-	  "%zu crash images)\n", NT, OPS, n_alloc, n_free, n_enospc,
+  printf ("t_balloc: OK (%s windows, %d threads x %d operations, "
+	  "%lu allocations, %lu window hits, %lu frees, %lu ENOSPC, "
+	  "%lu filler commits, %zu writes, %zu crash images)\n",
+	  win_mode == WIN_RESERVED ? "reserved" : win_mode == WIN_OLD
+	  ? "bitmap" : "no", NT, OPS, n_alloc, win_hits, n_free, n_enospc,
 	  filler_commits, jt_log_count (), checked);
   return 0;
 }
