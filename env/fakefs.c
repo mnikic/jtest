@@ -40,6 +40,7 @@ pthread_spinlock_t modified_global_blocks_lock;
 int diskfs_synchronous;
 struct pokel global_pokel;
 int diskfs_readonly;
+int diskfs_hard_readonly;
 vm_size_t vm_page_size = 4096;
 
 void *disk_cache;
@@ -1461,6 +1462,12 @@ jt_umount (void)
   diskfs_journal_shutdown ();
   stop_pagers ();
   return jt_warnings;
+}
+
+int
+jt_journal_check (void)
+{
+  return journal_check (jnode);
 }
 
 void

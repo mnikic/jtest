@@ -18,6 +18,12 @@ BALLOC_C ?= $(HURD)/ext2fs/balloc.c
 CC ?= gcc
 CFLAGS ?= -O1 -g -fno-omit-frame-pointer
 CFLAGS += -std=gnu11 -Wall -Wno-unused-function -pthread
+# A patched journal.c can come with patched headers of the tree next to
+# it (patched/libdiskfs/diskfs.h), found first.  make clean after
+# switching.
+ifneq ($(abspath $(JOURNAL_C)),$(abspath $(HURD)/ext2fs/journal.c))
+CPPFLAGS += -I$(dir $(JOURNAL_C))
+endif
 CPPFLAGS += -D_GNU_SOURCE -Ishim -Ienv -I$(HURD) -I$(HURD)/libshouldbeinlibc \
 	    -I$(HURD)/libports -I$(HURD)/ext2fs
 # Debug messages go to the flight recorder only; it is dumped on aborts.

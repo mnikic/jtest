@@ -61,6 +61,8 @@ void jt_read (block_t b, void *out);
    evicting it (EVICT 1).  A clean block is not written.  With WAIT, wait
    until it is done.  */
 void jt_pageout (block_t b, int evict, int wait);
+/* journal_check on the journal as the store now has it.  */
+int jt_journal_check (void);
 
 /* The same for directory blocks, whose live copy is in a directory's
    file pager instead of the disk cache.  The file pager writes them

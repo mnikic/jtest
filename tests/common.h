@@ -126,6 +126,19 @@ history_op_done (struct history *h, int synced)
   h->synced[h->nops] = synced ? jt_log_count () : SIZE_MAX;
 }
 
+/* diskfs_journal_commit_transaction, and what it returns: 0 while the
+   tree's returns nothing.  */
+#define JT_COMMIT_RETURNS \
+  !__builtin_types_compatible_p \
+    (__typeof__ (diskfs_journal_commit_transaction (NULL)), void)
+static inline error_t
+jt_commit (diskfs_transaction_t *txn)
+{
+  return __builtin_choose_expr (JT_COMMIT_RETURNS,
+				diskfs_journal_commit_transaction (txn),
+				(diskfs_journal_commit_transaction (txn), 0));
+}
+
 /* A jt_crash_check_fn for a struct history.  */
 static inline const char *
 history_check (size_t n, int torn, const char *img, void *arg)
