@@ -11,13 +11,8 @@
 
    After the failure, there must be no stale page-in, and every crash
    image must hold one operation's state, no older than one whose commit
-   returned.  By default the run covers jsb and pager, each in a process
-   of its own.
-
-   checkpoint fails on some seeds, not yet understood: after a failed
-   flush following a commit (needs_flush left set), a page-in of the
-   block can read stale data before the buffer is dropped (seed 2,
-   block 2050).
+   returned.  By default the run covers jsb, pager and checkpoint, each
+   in a process of its own.
 
    log-data and commit abort a commit, and fail today: the aborted
    transaction's shadows are freed, among them the only copy of pages
@@ -131,7 +126,7 @@ main (int argc, char **argv)
 {
   const char *image = argc > 1 ? argv[1] : "build/base.img";
   unsigned seed = argc > 2 ? atoi (argv[2]) : 1;
-  static const char *const safe[] = { "jsb", "pager", NULL };
+  static const char *const safe[] = { "jsb", "pager", "checkpoint", NULL };
   const char *one[] = { argc > 3 ? argv[3] : NULL, NULL };
   const char *const *kinds = argc > 3 ? one : safe;
   int status;
