@@ -276,6 +276,12 @@ MUTANTS = [
     journal_flush_checkpoints_locked (journal, UINT32_MAX, 0);""",
             "t_logpress",
             why="a transaction bigger than a forced checkpoint frees has no room"),
+    Mutant ("wait-committed-frees", J,
+            """  else if (tid_gt (ext2_journal->j_last_committed_tid,
+		   ext2_journal->j_released_tid))""",
+            """  else if (0)""",
+            "t_release_order",
+            why="a wait for freed blocks gives up while a commit's are on the way"),
 ]
 
 
