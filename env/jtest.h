@@ -116,6 +116,10 @@ void jt_drain (void);
    page-in; DATA, if not NULL, is an image of the block.  */
 void jt_trace (block_t b, const char *what, const void *data);
 
+/* Number of page-ins that failed, as libpager fails the page-in of a
+   page whose eviction write failed.  */
+unsigned long jt_pager_errors (void);
+
 /* Number of page-ins whose data did not match the evicted bytes.  */
 unsigned long jt_stale_reads (void);
 
@@ -145,6 +149,10 @@ void jt_build_image (size_t n, int torn, const char *path);
 
 /* Whether byte offset OFF of the store is in the journal's blocks.  */
 int jt_in_journal (uint64_t off);
+
+/* The journal block index of byte offset OFF (0 for the journal
+   superblock), or -1 if it is not in the journal.  */
+long jt_journal_index (uint64_t off);
 
 /* Checks the image IMG that a crash after the first N log entries leaves
    (with the last one torn if TORN), once e2fsck has replayed it.  Returns
@@ -180,6 +188,14 @@ int jt_shadow (diskfs_transaction_t *txn, block_t b, void *out);
    OFF, if set, outside the journal lock.  Tests use it to hold a write.  */
 extern void (*jt_store_write_hook) (uint64_t off, size_t len,
 				    const void *buf);
+
+/* Whether the calling thread is one of the harness's pager threads.  */
+int jt_on_pager_thread (void);
+
+/* Called before every store_write, if set: a nonzero return is the
+   error the write fails with, and nothing of it reaches the disk.  */
+extern int (*jt_store_fail_hook) (uint64_t off, size_t len,
+				  const void *buf);
 
 /* Whether a transaction in the checkpoint list still has to write block
    B home: a buffer for B not marked written.  */

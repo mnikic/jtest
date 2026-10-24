@@ -86,6 +86,10 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                crash and e2fsck's replay; and with both mounts' log
                layouts lined up, so that a reused sequence number would
                replay the first mount's transactions.
+               t_ioerr: one write fails with EIO midway (jt_store_fail_hook);
+               jsb and pager kinds must leave no stale page-in and good
+               crash images.  commit, log-data and checkpoint fail today
+               (see the file); run them by name.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.

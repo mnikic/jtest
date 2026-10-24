@@ -51,6 +51,7 @@ struct store *store = &fake_store;
 
 void (*jt_on_release) (block_t start, unsigned long count);
 void (*jt_store_write_hook) (uint64_t off, size_t len, const void *buf);
+int (*jt_store_fail_hook) (uint64_t off, size_t len, const void *buf);
 void (*jt_ref_mapped_hook) (block_t b);
 
 static int jt_flags;
@@ -187,6 +188,16 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
     return EIO;
   if (jt_store_write_hook)
     jt_store_write_hook (off, len, buf);
+  if (jt_store_fail_hook)
+    {
+      int err = jt_store_fail_hook (off, len, buf);
+      if (err)
+	{
+	  /* Nothing reaches the disk.  */
+	  *amount = 0;
+	  return err;
+	}
+    }
   if (write_delay_us)
     {
       /* A write in flight for a while, as on a real disk, so that
@@ -448,6 +459,9 @@ struct cache
   unsigned char *discarded;
   /* File pager only: the block is a directory's, not file data.  */
   unsigned char *is_dir;
+  /* As libpager's PM_INVALID: an evicted page whose write failed.  Its
+     next page-in fails instead of reading what is on disk.  */
+  unsigned char *invalid;
 };
 
 static struct cache dcache = { .name = "disk cache", .disk_cache = 1 };
@@ -457,6 +471,13 @@ static pthread_mutex_t page_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t page_in_done = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t page_out_done = PTHREAD_COND_INITIALIZER;
 static unsigned long stale_reads;
+static unsigned long pager_errors;
+
+unsigned long
+jt_pager_errors (void)
+{
+  return pager_errors;
+}
 
 enum req_kind { REQ_CLEAN, REQ_EVICT, REQ_PAGEIN, REQ_CALL, REQ_EXIT };
 
@@ -482,6 +503,13 @@ static int npagers_running;
 static unsigned long in_flight;	/* Requests queued or being served.  */
 
 static __thread int keeps_page;
+static __thread int on_pager_thread;
+
+int
+jt_on_pager_thread (void)
+{
+  return on_pager_thread;
+}
 
 int
 pager_write_keeps_page (void)
@@ -513,6 +541,7 @@ cache_init (struct cache *c, char *mem, size_t nblocks)
   c->pagein_wait = calloc (nblocks, 1);
   c->discarded = calloc (nblocks, 1);
   c->is_dir = calloc (nblocks, 1);
+  c->invalid = calloc (nblocks, 1);
 }
 
 /* Queue a request; with WAIT, wait for it and free it.  */
@@ -589,6 +618,8 @@ serve_pageout (struct cache *c, block_t b, int evict)
 		  strerror (err ? err : EIO));
 
   pthread_mutex_lock (&page_lock);
+  if ((err || amount != block_size) && evict && !c->pagein_wait[b])
+    c->invalid[b] = 1;
   if (!c->disk_cache)
     jt_trace (b, "page-out: written", NULL);
   c->paging_out[b] = 0;
@@ -624,6 +655,15 @@ serve_pagein (struct cache *c, block_t b)
       c->pagein_wait[b] = 1;
       pthread_mutex_unlock (&page_lock);
       return;
+    }
+  if (c->invalid[b])
+    {
+      /* memory_object_data_error: the fault fails.  The harness has no
+	 faulting thread to fail, so it counts it and lets the data be
+	 what the journal reads, unchecked.  */
+      c->invalid[b] = 0;
+      c->discarded[b] = 1;
+      pager_errors++;
     }
   c->paging_in[b] = 1;
   pthread_mutex_unlock (&page_lock);
@@ -663,6 +703,7 @@ pager_thread (void *arg)
 {
   (void) arg;
   journal_thread_set_pager (1);
+  on_pager_thread = 1;
   for (;;)
     {
       struct req *r;
@@ -1231,6 +1272,16 @@ load_journal_inode (void)
   in_journal = calloc (store_bytes >> log2_block_size, 1);
   for (size_t i = 0; i < jnode_map_len; i++)
     in_journal[jnode_map[i]] = 1;
+}
+
+long
+jt_journal_index (uint64_t off)
+{
+  block_t b = off >> log2_block_size;
+  for (size_t i = 0; i < jnode_map_len; i++)
+    if (jnode_map[i] == b)
+      return i;
+  return -1;
 }
 
 int
