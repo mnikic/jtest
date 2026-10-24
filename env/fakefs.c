@@ -944,22 +944,29 @@ pokel_add (struct pokel *pokel, void *loc, vm_size_t length)
   pthread_mutex_unlock (&page_lock);
 }
 
-/* The journaled path of hyper.c's diskfs_set_hypermetadata.  */
+/* The journaled path of hyper.c's diskfs_set_hypermetadata: the flag
+   read, and the flag cleared and the copy made, under global_lock.  */
 error_t
 diskfs_set_hypermetadata (int wait, int clean)
 {
   diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
   block_t blk = boffs_block (SBLOCK_OFFS);
+  int dirty;
 
   (void) clean;
-  if (sblock_dirty)
+  pthread_spin_lock (&global_lock);
+  dirty = sblock_dirty;
+  pthread_spin_unlock (&global_lock);
+  if (dirty)
     {
-      sblock_dirty = 0;
       journal_get_write_access (txn, blk);
+      pthread_spin_lock (&global_lock);
+      sblock_dirty = 0;
       pthread_mutex_lock (&page_lock);
       memcpy (mapped_sblock, sblock, SBLOCK_SIZE);
       dcache.dirty[blk] = 1;
       pthread_mutex_unlock (&page_lock);
+      pthread_spin_unlock (&global_lock);
       journal_mark_dirty (txn, blk);
       if (modified_global_blocks)
 	{
