@@ -233,6 +233,10 @@ int jt_checkpointing (void);
    work, which claim blocks for their own writes.  With the pagers
    drained too (jt_drain), a claim is one nothing will release.  */
 long jt_flush_claims (void);
+/* TXN's number, and the last transaction whose freed blocks went back
+   to the allocator (with all before it).  */
+uint32_t jt_txn_tid (diskfs_transaction_t *txn);
+uint32_t jt_released_tid (void);
 
 /* Whether TXN is draining for a commit (T_LOCKED).  */
 int jt_txn_locked (diskfs_transaction_t *txn);

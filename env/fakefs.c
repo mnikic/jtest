@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -1342,8 +1343,8 @@ jt_stale_reads (void)
 static void
 ref_block (block_t b)
 {
-  assert_backtrace (disk_cache_info[b].ref_count + 1
-		    > disk_cache_info[b].ref_count);
+  /* A uint16_t: ref_count + 1 would be an int.  */
+  assert_backtrace (disk_cache_info[b].ref_count < UINT16_MAX);
   disk_cache_info[b].ref_count++;
 }
 
@@ -1388,7 +1389,12 @@ _disk_cache_block_deref (void *ptr)
 }
 
 /* ext2fs has written into the page: it is dirty.  With a journal the
-   pokel itself is only released, never synced.  */
+   pokel itself is only released, never synced.  The caller's reference
+   goes to the pokel, which keeps one per block, as pokel.c does: a block
+   it already has gives its new reference back at once.  The harness's
+   pokels keep theirs (pokel_flush does nothing), one per block poked.  */
+static unsigned char *poked;
+
 void
 pokel_add (struct pokel *pokel, void *loc, vm_size_t length)
 {
@@ -1397,8 +1403,19 @@ pokel_add (struct pokel *pokel, void *loc, vm_size_t length)
 
   (void) pokel;
   pthread_mutex_lock (&page_lock);
+  if (!poked)
+    poked = calloc (jt_nblocks (), 1);
   for (block_t b = first; b <= last; b++)
-    dcache.dirty[b] = 1;
+    {
+      dcache.dirty[b] = 1;
+      if (poked[b])
+	{
+	  assert_backtrace (disk_cache_info[b].ref_count > 0);
+	  disk_cache_info[b].ref_count--;
+	}
+      else
+	poked[b] = 1;
+    }
   pthread_mutex_unlock (&page_lock);
 }
 
@@ -1671,6 +1688,21 @@ watchdog (int sig)
   (void) sig;
   if (write (2, msg, sizeof msg - 1) < 0)
     _exit (3);
+  /* With JT_WATCHDOG_GDB, every thread's backtrace first.  Not
+     async-signal-safe, but the process is stuck anyway.  */
+  if (getenv ("JT_WATCHDOG_GDB"))
+    {
+      prctl (PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+      /* JT_WATCHDOG_GDB other than 1: more gdb commands, as -ex
+	 arguments.  */
+      const char *more = getenv ("JT_WATCHDOG_GDB");
+      char cmd[1024];
+      snprintf (cmd, sizeof cmd, "gdb -p %d -batch -ex 'thread apply all "
+		"bt 16' %s </dev/null >&2 2>&1", (int) getpid (),
+		strcmp (more, "1") ? more : "");
+      if (system (cmd) < 0)
+	_exit (3);
+    }
   _exit (3);
 }
 
@@ -1681,6 +1713,8 @@ jt_mount (const char *image, int npagers, int flags)
   block_t nblocks;
 
   jt_flags = flags;
+  /* Reports reach a log even if the watchdog ends the test.  */
+  setvbuf (stdout, NULL, _IOLBF, 0);
   signal (SIGALRM, watchdog);
   alarm (getenv ("JT_WATCHDOG") ? atoi (getenv ("JT_WATCHDOG")) : 300);
   if (getenv ("JT_WRITE_DELAY"))

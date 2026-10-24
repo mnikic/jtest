@@ -10,7 +10,7 @@ JTEST = os.path.dirname (os.path.dirname (os.path.abspath (__file__)))
 
 # Tests that take no seed: one run is all there is.
 DETERMINISTIC = {"t_forget_race", "t_free_only", "t_late_edit", "t_logfmt",
-                 "t_notify_race",
+                 "t_notify_race", "t_release_order",
                  "t_sweep_race"}
 
 IMAGES = ("base.img", "balloc.img", "big.img", "full.img")
@@ -23,7 +23,7 @@ def tests ():
 
 def image_for (test):
     """As make check picks it."""
-    if test.startswith ("t_balloc_full"):
+    if test.startswith (("t_balloc_full", "t_balloc_lock")):
         return "full.img"
     for p in ("t_balloc", "t_trunc", "t_orphan", "t_rwcycle", "t_abortfiles"):
         if test.startswith (p):

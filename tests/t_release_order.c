@@ -1,0 +1,105 @@
+/* The frees of two commits go back to the allocator in order.
+
+   A commit hands its freed blocks back after it has finished, with the
+   journal lock dropped (journal_forget_freed_blocks), and the next
+   commit can run meanwhile.  j_released_tid says that the frees of every
+   transaction up to it are back, and journal_wait_freed_blocks waits on
+   it.  If the next commit's release finishes first and the older one
+   then sets j_released_tid back, a thread waiting for the newer frees
+   waits for good: in t_balloc_lock, with a node's alloc_lock held, and
+   its own transaction's commit waiting for it.
+
+   The steps are forced:
+   1. T1 frees B1 and commits on a thread of its own; the release of B1
+      is held (jt_on_release).
+   2. T2 frees B2 and commits on another thread.
+   3. The release of B1 is let go.
+   Then the frees of T1 and of T2 are back, and j_released_tid is T2's.
+   Before that, it must never say T2's frees are back while T1's are
+   not.  */
+
+#include <pthread.h>
+#include <unistd.h>
+#include "common.h"
+
+static block_t b1, b2;
+static int b2_back;
+
+static pthread_mutex_t hold_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t hold_cond = PTHREAD_COND_INITIALIZER;
+static int hold_reached, hold_released;
+
+static void
+on_release (block_t start, unsigned long count)
+{
+  if (b2 >= start && b2 < start + count)
+    __atomic_store_n (&b2_back, 1, __ATOMIC_RELEASE);
+  if (!(b1 >= start && b1 < start + count))
+    return;
+  pthread_mutex_lock (&hold_lock);
+  hold_reached = 1;
+  pthread_cond_broadcast (&hold_cond);
+  while (!hold_released)
+    pthread_cond_wait (&hold_cond, &hold_lock);
+  pthread_mutex_unlock (&hold_lock);
+}
+
+/* A transaction that frees B, and commits.  */
+static void *
+free_and_commit (void *arg)
+{
+  block_t b = (block_t) (uintptr_t) arg;
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  CHECK (journal_record_freed_blocks (txn, b, 1), "record the free of %u",
+	 b);
+  diskfs_journal_commit_transaction (txn);
+  return NULL;
+}
+
+int
+main (int argc, char **argv)
+{
+  const char *image = argc > 1 ? argv[1] : "build/base.img";
+  block_t picked[2];
+  pthread_t t1, t2;
+
+  jt_mount (image, 2, 0);
+  pick_free_blocks (picked, 2);
+  b1 = picked[0];
+  b2 = picked[1];
+  jt_on_release = on_release;
+
+  /* 1.  */
+  uint32_t before = jt_released_tid ();
+  pthread_create (&t1, NULL, free_and_commit, (void *) (uintptr_t) b1);
+  pthread_mutex_lock (&hold_lock);
+  while (!hold_reached)
+    pthread_cond_wait (&hold_cond, &hold_lock);
+  pthread_mutex_unlock (&hold_lock);
+  uint32_t tid1 = before + 1;
+
+  /* 2.  */
+  pthread_create (&t2, NULL, free_and_commit, (void *) (uintptr_t) b2);
+  usleep (200000);
+  uint32_t mid = jt_released_tid ();
+  CHECK (mid == before, "the frees up to transaction %u are said to be "
+	 "back while T1's (%u) are held", mid, tid1);
+
+  /* 3.  */
+  pthread_mutex_lock (&hold_lock);
+  hold_released = 1;
+  pthread_cond_broadcast (&hold_cond);
+  pthread_mutex_unlock (&hold_lock);
+  pthread_join (t1, NULL);
+  pthread_join (t2, NULL);
+  uint32_t after = jt_released_tid ();
+  CHECK (__atomic_load_n (&b2_back, __ATOMIC_ACQUIRE), "B2 is not back");
+  CHECK (after == tid1 + 1, "j_released_tid is %u after T1 (%u) and T2 "
+	 "(%u) released their frees", after, tid1, tid1 + 1);
+
+  unsigned long warnings = jt_umount ();
+  CHECK (warnings == 0, "%lu journal warnings", warnings);
+  printf ("t_release_order: OK (T1 %u and T2 %u released in order)\n",
+	  tid1, tid1 + 1);
+  return 0;
+}

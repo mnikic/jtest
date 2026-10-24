@@ -1,0 +1,42 @@
+--- a/ext2fs/journal.c
++++ b/ext2fs/journal.c
+@@ -1829,6 +1829,8 @@
+  * busy until here, so no copy can belong to a new owner yet.  The blocks
+  * then go back to the allocator.
+  */
++static inline int tid_gt (uint32_t t1, uint32_t t2);
++
+ static void
+ journal_forget_freed_blocks (journal_t *journal, uint32_t freed_tid,
+ 			     journal_freed_extent_t *freed)
+@@ -1877,8 +1879,19 @@
+       freed = ext;
+     }
+ 
++  /* Releases go in transaction order, so that j_released_tid means that
++     the frees of every transaction up to it are back.  The next commit
++     can finish, and its release too, while this one waits for a pager
++     write or for global_lock above; setting j_released_tid back to
++     FREED_TID then would leave a thread waiting for that commit's frees
++     (journal_wait_freed_blocks) waiting for good, maybe with a node
++     lock its own transaction's commit waits for.  */
+   JOURNAL_LOCK (journal);
+-  journal->j_released_tid = freed_tid;
++  while (tid_gt (freed_tid, journal->j_released_tid + 1))
++    JOURNAL_WAIT (&journal->j_commit_done, journal);
++  /* An aborted commit after this one has set it already.  */
++  if (tid_gt (freed_tid, journal->j_released_tid))
++    journal->j_released_tid = freed_tid;
+   pthread_cond_broadcast (&journal->j_commit_done);
+   JOURNAL_UNLOCK (journal);
+ }
+@@ -3247,7 +3260,8 @@
+   journal->j_last_committed_tid = txn->t_tid;
+   /* The frees did not commit, and older copies of their blocks were not
+      forgotten.  The blocks stay busy until the next mount.  */
+-  journal->j_released_tid = txn->t_tid;
++  if (tid_gt (txn->t_tid, journal->j_released_tid))
++    journal->j_released_tid = txn->t_tid;
+   journal_abort_locked (journal, txn, err);
+   pthread_cond_broadcast (&journal->j_commit_done);
+ out:

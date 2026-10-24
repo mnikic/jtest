@@ -23,6 +23,21 @@ claims_in (diskfs_transaction_t *txn)
   return n;
 }
 
+uint32_t
+jt_txn_tid (diskfs_transaction_t *txn)
+{
+  return txn->t_tid;
+}
+
+uint32_t
+jt_released_tid (void)
+{
+  JOURNAL_LOCK (ext2_journal);
+  uint32_t tid = ext2_journal->j_released_tid;
+  JOURNAL_UNLOCK (ext2_journal);
+  return tid;
+}
+
 long
 jt_flush_claims (void)
 {
