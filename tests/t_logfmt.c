@@ -237,14 +237,16 @@ big_check (size_t n, int torn, const char *img, void *arg)
   FILE *f = fopen (img, "r");
   long first = -2;
 
+  (void) torn;
   (void) arg;
   CHECK (f, "open %s", img);
   for (int i = 0; i < BIG; i++)
     {
       block_t b = big[i];
       image_block (f, b, buf);
-      /* The crash tore this block's own data write.  */
-      if (torn && n == data_at[i])
+      /* The crash tore this block's own data write, or lost it before
+	 a flush.  */
+      if (n >= data_at[i] && !jt_crash_on_disk (data_at[i] - 1))
 	continue;
       if (n >= data_at[i])
 	{

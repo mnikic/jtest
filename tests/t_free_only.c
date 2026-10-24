@@ -71,9 +71,10 @@ check (size_t n, int torn, const char *img, void *arg)
   fclose (f);
   v = pattern_version (buf, b_blk);
   free (buf);
-  /* A torn write of the data itself leaves it torn.  */
+  /* Not flushed, the data may be lost, and a torn write of it leaves
+     it torn.  */
   if (n >= data_written_at && v != DATA_WORD
-      && !(torn && n == data_written_at))
+      && jt_crash_on_disk (data_written_at - 1))
     {
       snprintf (msg, sizeof msg, "block %u holds %lx, not its data",
 		b_blk, v);

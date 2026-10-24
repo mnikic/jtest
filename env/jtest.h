@@ -175,6 +175,21 @@ int jt_in_journal (uint64_t off);
    superblock), or -1 if it is not in the journal.  */
 long jt_journal_index (uint64_t off);
 
+/* A crash after the first N log entries, on a disk that had not written
+   all of those since the last flush (store_sync): for VARIANT 0, none
+   is lost (the default); for another, some, picked at random from N and
+   VARIANT, and maybe one of the others torn.  jt_build_image of N then
+   builds that image, until the next call.  Returns how many are lost.  */
+size_t jt_crash_reorder (size_t n, unsigned variant);
+/* Whether log entry I is on the disk of the crash set up.  */
+int jt_crash_kept (size_t i);
+/* Whether log entry I is the write torn in the image jt_build_image
+   built last; whether it is a write on that disk whole.  */
+int jt_crash_torn_at (size_t i);
+int jt_crash_on_disk (size_t i);
+/* Which writes were lost, for a report.  */
+void jt_crash_describe (char *buf, size_t len);
+
 /* Checks the image IMG that a crash after the first N log entries leaves
    (with the last one torn if TORN), once e2fsck has replayed it.  Returns
    NULL if it is right, or what is wrong.  */
@@ -187,7 +202,9 @@ typedef const char *(*jt_crash_check_fn) (size_t n, int torn,
    clean, then call CHECK.  JT_CRASH_POINTS sets how
    many points (default 300, 0 for every one); JT_JOBS how many run at
    once (default: one per CPU); JT_TMP where the images go (default
-   /dev/shm); JT_NO_CRASH skips the checks.  On the first failure, reports it, keeps the crashed image
+   /dev/shm); JT_NO_CRASH skips the checks.  JT_REORDER=R adds R
+   reordered crashes per point (jt_crash_reorder); CHECK then sees TORN
+   as 0, and asks jt_crash_kept which writes are there.  On the first failure, reports it, keeps the crashed image
    as build/NAME-crash-N.img and exits.  Returns the number of images
    checked.  Call it after jt_umount or jt_abandon.  */
 size_t jt_crash_check (const char *name, jt_crash_check_fn check, void *arg);

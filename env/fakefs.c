@@ -375,11 +375,106 @@ write_file (const char *path, const char *data, size_t len)
     }
 }
 
+/* The reordered crash jt_crash_reorder set up, if any: of the writes
+   from REORDER_FROM to REORDER_N, those in REORDER_DROP did not reach the
+   disk, and the one at REORDER_TORN (if not -1) only did for its first
+   half.  */
+static size_t reorder_from, reorder_n, reorder_dropped, reorder_unsynced;
+static unsigned char *reorder_drop;
+static long reorder_torn = -1;
+/* The image jt_build_image built last.  */
+static size_t built_n;
+static int built_torn;
+
+size_t
+jt_crash_reorder (size_t n, unsigned variant)
+{
+  free (reorder_drop);
+  reorder_drop = NULL;
+  reorder_torn = -1;
+  reorder_from = reorder_n = n;
+  reorder_dropped = reorder_unsynced = 0;
+  if (!variant)
+    return 0;
+
+  /* What the last flush before the crash put on disk is there: the
+     writes after it may not be.  */
+  size_t from = n;
+  while (from > 0 && log_entries[from - 1].data)
+    from--;
+  size_t m = n - from;
+  if (m == 0)
+    return 0;
+
+  unsigned seed = (unsigned) (n * 7919 + variant * 104729);
+  reorder_from = from;
+  reorder_drop = calloc (n - from, 1);
+  reorder_unsynced = m;
+  for (size_t k = 0; k < m; k++)
+    if (rand_r (&seed) % 2)
+      {
+	reorder_drop[k] = 1;
+	reorder_dropped++;
+      }
+  if (!reorder_dropped)
+    {
+      reorder_drop[rand_r (&seed) % m] = 1;
+      reorder_dropped = 1;
+    }
+  if (rand_r (&seed) % 2 && reorder_dropped < m)
+    {
+      size_t k;
+      do
+	k = rand_r (&seed) % m;
+      while (reorder_drop[k]);
+      reorder_torn = from + k;
+    }
+  return reorder_dropped;
+}
+
+int
+jt_crash_kept (size_t i)
+{
+  return !(reorder_drop && built_n == reorder_n && i >= reorder_from
+	   && i < reorder_n && reorder_drop[i - reorder_from]);
+}
+
+int
+jt_crash_torn_at (size_t i)
+{
+  if (reorder_drop && built_n == reorder_n)
+    return (long) i == reorder_torn;
+  return built_torn && built_n > 0 && i == built_n - 1;
+}
+
+int
+jt_crash_on_disk (size_t i)
+{
+  return i < built_n && log_entries[i].data && jt_crash_kept (i)
+    && !jt_crash_torn_at (i);
+}
+
+void
+jt_crash_describe (char *buf, size_t len)
+{
+  int o = snprintf (buf, len, "%zu of the %zu writes since the flush at %zu "
+		    "lost", reorder_dropped, reorder_unsynced,
+		    reorder_from);
+  for (size_t i = reorder_from, k = 0; i < reorder_n && o < (int) len - 24;
+       i++)
+    if (reorder_drop[i - reorder_from] && k++ < 12)
+      o += snprintf (buf + o, len - o, "%s%zu", k == 1 ? ": " : ", ", i);
+  if (reorder_torn >= 0 && o < (int) len - 24)
+    snprintf (buf + o, len - o, "; %ld torn", reorder_torn);
+}
+
 void
 jt_build_image (size_t n, int torn, const char *path)
 {
   char *img = malloc (store_bytes);
 
+  built_n = n;
+  built_torn = torn;
   memcpy (img, store_base, store_bytes);
   for (size_t i = 0; i < n && i < log_n; i++)
     {
@@ -387,7 +482,14 @@ jt_build_image (size_t n, int torn, const char *path)
       size_t len = w->len;
       if (!w->data)
 	continue;
-      if (torn && i == n - 1)
+      if (reorder_drop && n == reorder_n)
+	{
+	  if (!jt_crash_kept (i))
+	    continue;
+	  if ((long) i == reorder_torn)
+	    len /= 2;
+	}
+      else if (torn && i == n - 1)
 	len /= 2;
       memcpy (img + w->off, w->data, len);
     }

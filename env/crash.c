@@ -61,10 +61,19 @@ check_one (size_t n, int torn, const char *img, const char *fsck_out,
   return check ? check (n, torn, img, arg) : NULL;
 }
 
+/* A crash after the first N writes, the last one torn with TORN, or
+   reordered (jt_crash_reorder) for VARIANT > 0.  */
+struct point
+{
+  size_t n;
+  int torn;
+  unsigned variant;
+};
+
 /* Worker W of JOBS: check every JOBS-th point.  Exits 0 if all are right,
    1 after reporting the first that is not.  */
 static void
-worker (const char *name, int w, int jobs, const size_t *points,
+worker (const char *name, int w, int jobs, const struct point *points,
 	size_t npoints, jt_crash_check_fn check, void *arg)
 {
   char img[256], fsck_out[sizeof img + 8];
@@ -75,17 +84,30 @@ worker (const char *name, int w, int jobs, const size_t *points,
 
   for (size_t i = w; i < npoints; i += jobs)
     {
-      size_t n = points[i] >> 1;
-      int torn = points[i] & 1;
+      size_t n = points[i].n;
+      int torn = points[i].torn;
+      unsigned v = points[i].variant;
+      if (!jt_crash_reorder (n, v) && v)
+	continue;
       const char *err = check_one (n, torn, img, fsck_out, check, arg);
 
       if (err)
 	{
-	  char keep[256];
+	  char keep[256], lost[512] = "";
 
 	  /* Keep the image as the crash left it, before e2fsck.  */
-	  snprintf (keep, sizeof keep, "build/%s-crash-%zu%s.img", name, n,
-		    torn ? "-torn" : "");
+	  if (v)
+	    snprintf (keep, sizeof keep, "build/%s-crash-%zu-r%u.img", name,
+		      n, v);
+	  else
+	    snprintf (keep, sizeof keep, "build/%s-crash-%zu%s.img", name, n,
+		      torn ? "-torn" : "");
+	  if (v)
+	    {
+	      lost[0] = '(';
+	      jt_crash_describe (lost + 1, sizeof lost - 3);
+	      strcat (lost, ")\n  ");
+	    }
 	  jt_build_image (n, torn, keep);
 	  jt_run ("cp %s %s.replayed && e2fsck -E journal_only -y %s.replayed "
 		  ">%s.fsck 2>&1 && e2fsck -fn %s.replayed >>%s.fsck 2>&1",
@@ -100,13 +122,17 @@ worker (const char *name, int w, int jobs, const size_t *points,
 	  keep[strlen (keep) - 4] = 0;
 	  /* One write, so that reports of several workers do not mix.  */
 	  char report[2048];
+	  char how[32] = "";
+	  if (v)
+	    snprintf (how, sizeof how, " (reordered %u)", v);
+	  else if (torn)
+	    strcpy (how, " (torn)");
 	  int len = snprintf (report, sizeof report,
-			      "%s: crash after write %zu%s: %s\n"
-			      "  crashed image %s.img, replayed by e2fsck in "
+			      "%s: crash after write %zu%s: %s\n  %s"
+			      "crashed image %s.img, replayed by e2fsck in "
 			      "%s.img.replayed\n  (its output in %s.img.fsck), "
 			      "the write log in %s.log\n",
-			      name, n, torn ? " (torn)" : "", err, keep, keep,
-			      keep, keep);
+			      name, n, how, err, lost, keep, keep, keep, keep);
 	  if (write (2, report, len) < 0)
 	    _exit (1);
 	  unlink (img);
@@ -130,19 +156,26 @@ jt_crash_check (const char *name, jt_crash_check_fn check, void *arg)
   size_t step = want && n_log > want ? n_log / want : 1;
   int jobs = getenv ("JT_JOBS") ? atoi (getenv ("JT_JOBS"))
     : (int) sysconf (_SC_NPROCESSORS_ONLN);
-  size_t *points = malloc ((2 * (n_log / step) + 4) * sizeof *points);
+  unsigned reorder = getenv ("JT_REORDER") ? atoi (getenv ("JT_REORDER"))
+    : 0;
+  struct point *points = malloc ((2 + reorder) * (n_log / step + 2)
+				 * sizeof *points);
   size_t npoints = 0;
   pid_t *pids;
   int failed = 0;
 
-  /* Every STEP-th prefix, and the whole log.  A point is N << 1 | TORN.  */
+  /* Every STEP-th prefix, and the whole log.  */
   for (size_t n = 0;; n += step)
     {
       if (n > n_log)
 	n = n_log;
-      points[npoints++] = n << 1;
+      points[npoints++] = (struct point) { n, 0, 0 };
       if (n > 0 && jt_log_entry (n - 1)->data)
-	points[npoints++] = n << 1 | 1;
+	{
+	  points[npoints++] = (struct point) { n, 1, 0 };
+	  for (unsigned v = 1; v <= reorder; v++)
+	    points[npoints++] = (struct point) { n, 0, v };
+	}
       if (n == n_log)
 	break;
     }

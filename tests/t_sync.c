@@ -407,6 +407,16 @@ read_version (FILE *f, block_t b, char *buf)
   return pattern_version (buf, b);
 }
 
+/* Whether the crash tore a write of block B.  */
+static int
+torn_block (size_t n, block_t b)
+{
+  for (size_t i = n; i-- > 0;)
+    if (jt_crash_torn_at (i))
+      return jt_log_entry (i)->off == (uint64_t) b << log2_block_size;
+  return 0;
+}
+
 static const char *
 check (size_t n, int torn, const char *img, void *arg)
 {
@@ -475,9 +485,7 @@ check (size_t n, int torn, const char *img, void *arg)
       for (int k = 0; k < NDATA && !err; k++)
 	{
 	  /* A torn write of the data itself leaves it torn.  */
-	  if (torn && n > 0 && jt_log_entry (n - 1)->data
-	      && jt_log_entry (n - 1)->off == (uint64_t) dblk[t][k]
-	      << log2_block_size)
+	  if (torn_block (n, dblk[t][k]))
 	    continue;
 	  long vd = read_version (f, dblk[t][k], buf);
 	  long got = vd > 0 ? vd & 0x7fffffff : vd;

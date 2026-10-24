@@ -217,6 +217,22 @@ MUTANTS = [
             """	  record_indir_poke (node, ind_bh);""",
             "t_trunc",
             why="a surviving indirect block is edited unreserved"),
+    # The barriers, seen only by crashes that lose writes since the last
+    # flush (JT_REORDER).
+    Mutant ("flush-before-commit", J,
+            """  /* Ensure Data is on disk */
+  flush_to_disk ();
+""",
+            "",
+            "t_crash", env={"JT_REORDER": "4"},
+            why="the commit block can reach the disk before its log data"),
+    Mutant ("flush-after-commit", J,
+            """  /* Ensure Commit is persistent */
+  flush_to_disk ();
+""",
+            "",
+            "t_sync", env={"JT_REORDER": "4"},
+            why="a commit returns before its commit block is on disk"),
 ]
 
 

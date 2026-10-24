@@ -182,10 +182,10 @@ free_block (diskfs_transaction_t *txn, int k, int op)
 }
 
 /* The latest write of file data to pool block K in the first N log
-   entries, as its version word, or 0.  With TORN, the Nth write reached
-   the disk only in part; *SKIP is set if that was a write of K.  */
+   entries that reached the disk, as its version word, or 0.  *SKIP is
+   set if the crash tore a write of K after it.  */
 static uint32_t
-last_data_write (int k, size_t n, int torn, int *skip)
+last_data_write (int k, size_t n, int *skip)
 {
   uint64_t off = (uint64_t) pool[k] << log2_block_size;
 
@@ -193,9 +193,9 @@ last_data_write (int k, size_t n, int torn, int *skip)
   for (size_t i = n; i-- > 0;)
     {
       const struct jt_write *w = jt_log_entry (i);
-      if (!w->data || w->off != off)
+      if (!w->data || w->off != off || !jt_crash_kept (i))
 	continue;
-      if (torn && i == n - 1)
+      if (jt_crash_torn_at (i))
 	{
 	  *skip = 1;
 	  return 0;
@@ -217,6 +217,7 @@ check (size_t n, int torn, const char *img, void *arg)
   uint32_t data[NP];
   int skip[NP], durable = 0, j;
 
+  (void) torn;
   (void) arg;
   CHECK (f, "open %s", img);
   for (int k = 0; k < NP; k++)
@@ -224,7 +225,7 @@ check (size_t n, int torn, const char *img, void *arg)
       CHECK (!fseeko (f, (off_t) pool[k] << log2_block_size, SEEK_SET)
 	     && fread (buf, block_size, 1, f) == 1, "read");
       got[k] = pattern_version (buf, pool[k]);
-      data[k] = last_data_write (k, n, torn, &skip[k]);
+      data[k] = last_data_write (k, n, &skip[k]);
     }
   fclose (f);
   free (buf);
