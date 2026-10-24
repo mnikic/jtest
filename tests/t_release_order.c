@@ -11,21 +11,23 @@
 
    The steps are forced:
    1. T1 frees B1 and commits on a thread of its own; the release of B1
-      is held (jt_on_release).  Meanwhile a thread W with a handle on the
-      next transaction asks to wait for freed blocks, as ext2_new_block
-      does on a full disk: T1 has committed, but its frees are not back,
-      so it must wait, not give up (which would be ENOSPC).
+      is held (jt_on_release).
    2. T2 frees B2 and commits on another thread.
    3. The release of B1 is let go.
-   Then W has waited, the frees of T1 and of T2 are back, and
-   j_released_tid is T2's.  Before that, it must never say T2's frees
-   are back while T1's are not.  */
+   Then the frees of T1 and of T2 are back, and j_released_tid is T2's.
+   Before that, it must never say T2's frees are back while T1's are
+   not.
+   4. T3 frees B3 and commits; its release is held.  A thread W with a
+      handle on the next transaction asks to wait for freed blocks, as
+      ext2_new_block does on a full disk: T3 has committed, but its frees
+      are not back, so W must wait, not give up (which would be ENOSPC).
+      The release is let go, and W has waited.  */
 
 #include <pthread.h>
 #include <unistd.h>
 #include "common.h"
 
-static block_t b1, b2;
+static block_t b1, b2, b3, held;
 static int b2_back;
 
 static pthread_mutex_t hold_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -37,7 +39,7 @@ on_release (block_t start, unsigned long count)
 {
   if (b2 >= start && b2 < start + count)
     __atomic_store_n (&b2_back, 1, __ATOMIC_RELEASE);
-  if (!(b1 >= start && b1 < start + count))
+  if (!(held >= start && held < start + count))
     return;
   pthread_mutex_lock (&hold_lock);
   hold_reached = 1;
@@ -78,13 +80,15 @@ int
 main (int argc, char **argv)
 {
   const char *image = argc > 1 ? argv[1] : "build/base.img";
-  block_t picked[2];
+  block_t picked[3];
   pthread_t t1, t2, w;
 
   jt_mount (image, 2, 0);
-  pick_free_blocks (picked, 2);
+  pick_free_blocks (picked, 3);
   b1 = picked[0];
   b2 = picked[1];
+  b3 = picked[2];
+  held = b1;
   JT_SET_HOOK (jt_on_release, on_release);
 
   /* 1.  */
@@ -95,11 +99,6 @@ main (int argc, char **argv)
     pthread_cond_wait (&hold_cond, &hold_lock);
   pthread_mutex_unlock (&hold_lock);
   uint32_t tid1 = before + 1;
-  pthread_create (&w, NULL, waiter, NULL);
-  usleep (100000);
-  CHECK (!__atomic_load_n (&w_done, __ATOMIC_ACQUIRE), "a wait for freed "
-	 "blocks returned (waited: %d) while T1's, committed, were held",
-	 __atomic_load_n (&w_waited, __ATOMIC_ACQUIRE));
 
   /* 2.  */
   pthread_create (&t2, NULL, free_and_commit, (void *) (uintptr_t) b2);
@@ -114,13 +113,35 @@ main (int argc, char **argv)
   pthread_cond_broadcast (&hold_cond);
   pthread_mutex_unlock (&hold_lock);
   pthread_join (t1, NULL);
-  pthread_join (w, NULL);
   pthread_join (t2, NULL);
-  CHECK (w_waited, "the wait for freed blocks says it did not wait");
   uint32_t after = jt_released_tid ();
   CHECK (__atomic_load_n (&b2_back, __ATOMIC_ACQUIRE), "B2 is not back");
   CHECK (after == tid1 + 1, "j_released_tid is %u after T1 (%u) and T2 "
 	 "(%u) released their frees", after, tid1, tid1 + 1);
+
+  /* 4.  */
+  pthread_t t3;
+  pthread_mutex_lock (&hold_lock);
+  hold_reached = hold_released = 0;
+  held = b3;
+  pthread_mutex_unlock (&hold_lock);
+  pthread_create (&t3, NULL, free_and_commit, (void *) (uintptr_t) b3);
+  pthread_mutex_lock (&hold_lock);
+  while (!hold_reached)
+    pthread_cond_wait (&hold_cond, &hold_lock);
+  pthread_mutex_unlock (&hold_lock);
+  pthread_create (&w, NULL, waiter, NULL);
+  usleep (100000);
+  CHECK (!__atomic_load_n (&w_done, __ATOMIC_ACQUIRE), "a wait for freed "
+	 "blocks returned (waited: %d) while T3's, committed, were held",
+	 __atomic_load_n (&w_waited, __ATOMIC_ACQUIRE));
+  pthread_mutex_lock (&hold_lock);
+  hold_released = 1;
+  pthread_cond_broadcast (&hold_cond);
+  pthread_mutex_unlock (&hold_lock);
+  pthread_join (t3, NULL);
+  pthread_join (w, NULL);
+  CHECK (w_waited, "the wait for freed blocks says it did not wait");
 
   unsigned long warnings = jt_umount ();
   CHECK (warnings == 0, "%lu journal warnings", warnings);
