@@ -36,6 +36,13 @@ check_one (size_t n, int torn, const char *img, const char *fsck_out,
   int status;
 
   jt_build_image (n, torn, img);
+  if (jt_crash_fsck)
+    {
+      const char *err = jt_crash_fsck (img, fsck_out);
+      if (err)
+	return err;
+      return check ? check (n, torn, img, arg) : NULL;
+    }
   /* Only replay the journal: e2fsck -fy would also repair what it
      finds, and the check after it would not see it.  */
   status = jt_run ("e2fsck -E journal_only -y %s >%s 2>&1", img, fsck_out);
@@ -43,13 +50,6 @@ check_one (size_t n, int torn, const char *img, const char *fsck_out,
     {
       snprintf (msg, sizeof msg, "e2fsck -E journal_only exit %d", status);
       return msg;
-    }
-  if (jt_crash_fsck)
-    {
-      const char *err = jt_crash_fsck (img, fsck_out);
-      if (err)
-	return err;
-      return check ? check (n, torn, img, arg) : NULL;
     }
   status = jt_run ("e2fsck -fn %s >%s 2>&1", img, fsck_out);
   if (status)

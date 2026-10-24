@@ -25,8 +25,11 @@ void
 jt_inode_globals (void)
 {
   jt_ext2_globals ();
-  /* hyper.c's pointers into the disk cache.  */
+  /* hyper.c's pointers into the disk cache.  With 4K blocks it keeps
+     no map of modified blocks (allocate_mod_map).  */
   map_hypermetadata ();
+  free (modified_global_blocks);
+  modified_global_blocks = NULL;
   global_inode_size = le32toh (sblock->s_rev_level)
     ? le16toh (sblock->s_inode_size) : EXT2_GOOD_OLD_INODE_SIZE;
   inodes_per_block = block_size / global_inode_size;

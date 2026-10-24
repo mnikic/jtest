@@ -177,9 +177,9 @@ typedef const char *(*jt_crash_check_fn) (size_t n, int torn,
    as build/NAME-crash-N.img and exits.  Returns the number of images
    checked.  Call it after jt_umount or jt_abandon.  */
 size_t jt_crash_check (const char *name, jt_crash_check_fn check, void *arg);
-/* If set, run instead of e2fsck -fn on each replayed crash image IMG,
-   with its output to OUT: NULL if the image is right, or what is wrong.
-   CHECK may then be NULL.  */
+/* If set, run instead of the replay and e2fsck -fn on each crash image
+   IMG, as the crash left it, with its output to OUT: NULL if the image is
+   right, or what is wrong.  CHECK may then be NULL.  */
 extern const char *(*jt_crash_fsck) (const char *img, const char *out);
 
 /* Write the current store to PATH.  */
