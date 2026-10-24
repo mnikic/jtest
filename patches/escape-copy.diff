@@ -1,0 +1,126 @@
+--- a/ext2fs/journal.c
++++ b/ext2fs/journal.c
+@@ -441,7 +441,8 @@
+ 				   the sweep was copying, so the sweep's
+ 				   copy may be older and is dropped.  */
+   uint8_t jb_is_flushing;	/* 1 if commit thread is actively flushing it. */
+-  uint8_t jb_escaped;
++  uint8_t jb_escaped;		/* Starts with the JBD2 magic number: the
++				   log gets a copy with it zeroed.  */
+   uint8_t jb_external;		/* Reserved through
+ 				   journal_get_write_access_external: a
+ 				   directory block, whose live bytes are in
+@@ -612,6 +613,7 @@
+   /* Pre-allocated buffers for zero-allocation commits */
+   void *j_descriptor_buf;
+   void *j_commit_buf;
++  void *j_escape_buf;		/* The log copy of an escaped block.  */
+   /* Pre-allocated buffers for (near) zero-allocation journal_get_write_access */
+   journal_buffer_t *j_pool_memory;	/* The raw contiguous block */
+   journal_buffer_t *j_free_buffers;	/* The linked list head */
+@@ -2778,7 +2780,17 @@
+       journal_buffer_t *p =
+ 	journal_map_iterate (&txn->t_buffer_map, &data_iter);
+       uint32_t data_loc = journal_next_log_block_safe (journal);
+-      err = journal_write_block (journal, data_loc, p->jb_shadow_data);
++      void *data = p->jb_shadow_data;
++
++      /* The shadow itself stays as it is: it serves reads while it is
++	 written, and after an abort.  */
++      if (p->jb_escaped)
++	{
++	  memcpy (journal->j_escape_buf, data, block_size);
++	  memset (journal->j_escape_buf, 0, sizeof (uint32_t));
++	  data = journal->j_escape_buf;
++	}
++      err = journal_write_block (journal, data_loc, data);
+       if (err)
+ 	return err;
+     }
+@@ -2786,24 +2798,6 @@
+   return 0;
+ }
+ 
+-static void
+-restore_escaped_magic (const diskfs_transaction_t *txn,
+-		       size_t batch_start_iter, uint32_t batch_count)
+-{
+-  size_t iter = batch_start_iter;
+-  uint32_t magic_const = htobe32 (JBD2_MAGIC_NUMBER);
+-
+-  for (uint32_t i = 0; i < batch_count; i++)
+-    {
+-      journal_buffer_t *jb = journal_map_iterate (&txn->t_buffer_map, &iter);
+-      if (jb->jb_escaped)
+-	{
+-	  memcpy (jb->jb_shadow_data, &magic_const, sizeof (magic_const));
+-	  jb->jb_escaped = 0;
+-	}
+-    }
+-}
+-
+ /* Writes the Descriptor Block + All Data Blocks (Escaped) */
+ static error_t
+ journal_write_payload (journal_t *journal, const diskfs_transaction_t *txn)
+@@ -2847,8 +2841,6 @@
+ 	  if (err)
+ 	    return err;
+ 
+-	  restore_escaped_magic (txn, batch_start_iter, batch_count);
+-
+ 	  /* Prepare for the next batch */
+ 	  descriptor_loc = journal_next_log_block_safe (journal);
+ 	  memset (descriptor_buf, 0, block_size);
+@@ -2872,16 +2864,9 @@
+       /* Escaping Logic */
+       uint32_t data_head;
+       memcpy (&data_head, jb->jb_shadow_data, sizeof (data_head));
+-      if (data_head == htobe32 (JBD2_MAGIC_NUMBER))
+-	{
+-	  flags |= JBD2_FLAG_ESCAPE;
+-	  memset (jb->jb_shadow_data, 0, sizeof (data_head));
+-	  jb->jb_escaped = 1;
+-	}
+-      else
+-	{
+-	  jb->jb_escaped = 0;
+-	}
++      jb->jb_escaped = data_head == htobe32 (JBD2_MAGIC_NUMBER);
++      if (jb->jb_escaped)
++	flags |= JBD2_FLAG_ESCAPE;
+ 
+       tag->t_flags = htobe32 (flags);
+       tag_offset += sizeof (journal_block_tag_t);
+@@ -2896,7 +2881,6 @@
+       err =
+ 	journal_write_batch (journal, txn, descriptor_buf, descriptor_loc,
+ 			     batch_start_iter, batch_count);
+-      restore_escaped_magic (txn, batch_start_iter, batch_count);
+     }
+ 
+   return err;
+@@ -3426,12 +3410,14 @@
+   j->j_min_free = j->j_max_transaction_buffers + JRNL_METADATA_OVERHEAD;
+   j->j_descriptor_buf = malloc (block_size);
+   j->j_commit_buf = malloc (block_size);
++  j->j_escape_buf = malloc (block_size);
+   /* Shared by every journal this translator starts.  */
+   if (!journal_external_scratch)
+     journal_external_scratch = malloc (block_size);
+   if (!journal_sweep_scratch)
+     journal_sweep_scratch = malloc (block_size);
+-  if (!j->j_descriptor_buf || !j->j_commit_buf || !journal_external_scratch
++  if (!j->j_descriptor_buf || !j->j_commit_buf || !j->j_escape_buf
++      || !journal_external_scratch
+       || !journal_sweep_scratch)
+     ext2_panic ("No RAM for commit buffers!");
+ 
+@@ -4388,6 +4374,8 @@
+   journal->j_descriptor_buf = NULL;
+   free (journal->j_commit_buf);
+   journal->j_commit_buf = NULL;
++  free (journal->j_escape_buf);
++  journal->j_escape_buf = NULL;
+   free (journal->map.phys_blocks);
+   journal->map.phys_blocks = NULL;
+   journal->map.inode = NULL;

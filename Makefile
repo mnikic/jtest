@@ -43,7 +43,7 @@ BALLOC_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_balloc*.c))
 EXT2_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_trunc*.c))
 EXT2_OBJS = $(B)/balloc.o $(B)/getblk.o $(B)/truncate.o $(B)/ext2glue.o
 
-all: $(TESTS) $(B)/base.img $(B)/balloc.img
+all: $(TESTS) $(B)/base.img $(B)/balloc.img $(B)/big.img
 
 $(B):
 	mkdir -p $@
@@ -98,6 +98,11 @@ $(B)/t_%: tests/t_%.c tests/common.h $(ENV)
 $(B)/base.img: | $(B)
 	rm -f $@
 	mke2fs -q -F -t ext3 -o hurd -b 4096 $@ 16M
+
+# For t_logfmt's large transactions: a journal of 4096 blocks.
+$(B)/big.img: | $(B)
+	rm -f $@
+	mke2fs -q -F -t ext3 -o hurd -b 4096 -J size=16 $@ 64M
 
 # For the allocator: four groups, and two empty files to own blocks.
 $(B)/balloc.img: | $(B)
