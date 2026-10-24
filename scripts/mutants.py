@@ -268,6 +268,14 @@ MUTANTS = [
             "",
             "t_release_order",
             why="a newer commit's release goes before an older one's"),
+    # Log space (t_logpress).
+    Mutant ("commit-space-no-empty", J,
+            """  if (journal->j_free < needed)
+    journal_flush_checkpoints_locked (journal, UINT32_MAX, 0);""",
+            """  if (0)
+    journal_flush_checkpoints_locked (journal, UINT32_MAX, 0);""",
+            "t_logpress",
+            why="a transaction bigger than a forced checkpoint frees has no room"),
 ]
 
 

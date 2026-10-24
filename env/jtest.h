@@ -236,6 +236,8 @@ long jt_flush_claims (void);
 /* TXN's number, and the last transaction whose freed blocks went back
    to the allocator (with all before it).  */
 uint32_t jt_txn_tid (diskfs_transaction_t *txn);
+/* How many commits had to checkpoint to make room in the log.  */
+unsigned long jt_forced_checkpoints (void);
 uint32_t jt_released_tid (void);
 
 /* Whether TXN is draining for a commit (T_LOCKED).  */

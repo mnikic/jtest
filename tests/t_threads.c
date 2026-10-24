@@ -20,11 +20,20 @@
 #include <unistd.h>
 #include "common.h"
 
+/* t_logpress.c builds this test bigger, under its own name.  */
+#ifndef NT
 #define NT 4
 #define K 3
+#define T_NAME "t_threads"
+#endif
+/* The blocks of thread T, at most KMAX.  */
+#ifndef KT
+#define KT(t) K
+#define KMAX K
+#endif
 
 static int ops = 150;
-static block_t own[NT][K], shared_block;
+static block_t own[NT][KMAX], shared_block;
 static pthread_mutex_t shared_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* SEQ[T][I]: the sequence number of thread T's operation I.  */
@@ -58,19 +67,19 @@ rpc_thread (void *arg)
     {
       diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
       diskfs_transaction_t *inner = NULL;
-      int order[K], sync = i % 10 == 0;
+      int order[KMAX], sync = i % 10 == 0;
 
       CHECK (txn, "no transaction");
-      for (int k = 0; k < K; k++)
+      for (int k = 0; k < KT (t); k++)
 	order[k] = k;
-      for (int k = K - 1; k > 0; k--)
+      for (int k = KT (t) - 1; k > 0; k--)
 	{
 	  int j = rand () % (k + 1), x = order[k];
 	  order[k] = order[j];
 	  order[j] = x;
 	}
 
-      for (int k = 0; k < K; k++)
+      for (int k = 0; k < KT (t); k++)
 	{
 	  if (k == 1)
 	    {
@@ -144,7 +153,7 @@ check (size_t n, int torn, const char *img, void *arg)
     {
       uint32_t need = 0;
 
-      for (int k = 0; k < K && !err; k++)
+      for (int k = 0; k < KT (t) && !err; k++)
 	{
 	  long v = read_version (f, own[t][k], buf);
 	  if (v != slots[t])
@@ -175,7 +184,8 @@ main (int argc, char **argv)
 {
   const char *image = argc > 1 ? argv[1] : "build/base.img";
   pthread_t threads[NT];
-  block_t picked[NT * K + 1];
+  static block_t picked[NT * KMAX + 1];
+  int npicked = 0;
   unsigned long warnings;
   size_t checked;
 
@@ -183,11 +193,15 @@ main (int argc, char **argv)
   if (getenv ("JT_OPS"))
     ops = atoi (getenv ("JT_OPS"));
   jt_mount (image, 3, 0);
-  pick_free_blocks (picked, NT * K + 1);
-  shared_block = picked[NT * K];
+  for (int t = 0; t < NT; t++)
+    npicked += KT (t);
+  pick_free_blocks (picked, npicked + 1);
+  shared_block = picked[npicked];
   for (int t = 0; t < NT; t++)
     {
-      memcpy (own[t], picked + t * K, sizeof own[t]);
+      static int next;
+      memcpy (own[t], picked + next, KT (t) * sizeof own[t][0]);
+      next += KT (t);
       seq[t] = calloc (ops + 1, sizeof *seq[t]);
     }
   durables = calloc (NT * ops, sizeof *durables);
@@ -201,8 +215,13 @@ main (int argc, char **argv)
   CHECK (warnings == 0, "%lu journal warnings", warnings);
   CHECK (jt_stale_reads () == 0, "%lu stale page-ins", jt_stale_reads ());
 
-  checked = jt_crash_check ("t_threads", check, NULL);
-  printf ("t_threads: OK (%d threads x %d operations, %zu writes, "
-	  "%zu crash images)\n", NT, ops, jt_log_count (), checked);
+#ifdef T_PRESSURE
+  CHECK (jt_forced_checkpoints () > 0, "the log never filled up: no "
+	 "commit had to checkpoint for space");
+#endif
+  checked = jt_crash_check (T_NAME, check, NULL);
+  printf (T_NAME ": OK (%d threads x %d operations of %d blocks, %lu "
+	  "forced checkpoints, %zu writes, %zu crash images)\n", NT, ops, K,
+	  jt_forced_checkpoints (), jt_log_count (), checked);
   return 0;
 }

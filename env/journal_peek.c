@@ -23,6 +23,12 @@ claims_in (diskfs_transaction_t *txn)
   return n;
 }
 
+unsigned long
+jt_forced_checkpoints (void)
+{
+  return JRNL_STAT_GET (journal_stat_forced_checkpoints);
+}
+
 uint32_t
 jt_txn_tid (diskfs_transaction_t *txn)
 {

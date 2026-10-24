@@ -143,6 +143,7 @@ $(EXT2_TESTS): $(B)/t_trunc%: tests/t_trunc%.c tests/common.h $(ENV) \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(EXT2_OBJS) $(LDFLAGS) \
 	  -Wl,--no-warn-execstack
 
+$(B)/t_logpress: tests/t_threads.c
 $(B)/t_%: tests/t_%.c tests/common.h $(ENV)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(LDFLAGS)
 
