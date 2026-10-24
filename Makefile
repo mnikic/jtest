@@ -33,6 +33,9 @@ B = build
 ENV = $(B)/journal.o $(B)/ihash.o $(B)/fakefs.o $(B)/crash.o
 TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_*.c))
 BALLOC_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_balloc*.c))
+# Tests on the real getblk.c and truncate.c (and balloc.c) of the tree.
+EXT2_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_trunc*.c))
+EXT2_OBJS = $(B)/balloc.o $(B)/getblk.o $(B)/truncate.o $(B)/ext2glue.o
 
 all: $(TESTS) $(B)/base.img $(B)/balloc.img
 
@@ -64,6 +67,20 @@ $(BALLOC_TESTS): $(B)/t_balloc%: tests/t_balloc%.c tests/common.h $(ENV) \
 		 $(B)/balloc.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(B)/balloc.o $(LDFLAGS)
 
+$(B)/getblk.o: $(HURD)/ext2fs/getblk.c | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(B)/truncate.o: $(HURD)/ext2fs/truncate.c | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(B)/ext2glue.o: env/ext2glue.c env/jtest.h | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(EXT2_TESTS): $(B)/t_trunc%: tests/t_trunc%.c tests/common.h $(ENV) \
+	       $(EXT2_OBJS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(EXT2_OBJS) $(LDFLAGS) \
+	  -Wl,--no-warn-execstack
+
 $(B)/t_%: tests/t_%.c tests/common.h $(ENV)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(LDFLAGS)
 
@@ -82,7 +99,7 @@ $(B)/balloc.img: | $(B)
 
 check: all
 	@for t in $(TESTS); do \
-	  case $$t in *t_balloc*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
+	  case $$t in *t_balloc*|*t_trunc*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
 	  $$t $$img 2>$$t.log || { tail -40 $$t.log; echo "FAIL: $$t (log: $$t.log)"; exit 1; }; \
 	done
 

@@ -13,4 +13,11 @@ hurd_safe_copyin (void *dest, const void *src, size_t size)
   memcpy (dest, src, size);
   return 0;
 }
+
+static inline error_t
+hurd_safe_copyout (void *dest, const void *src, size_t size)
+{
+  memcpy (dest, src, size);
+  return 0;
+}
 #endif

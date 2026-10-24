@@ -90,6 +90,12 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                jsb and pager kinds must leave no stale page-in and good
                crash images.  commit, log-data and checkpoint fail today
                (see the file); run them by name.
+               t_trunc: the real getblk.c and truncate.c (and balloc.c):
+               a real node grows through ext2_getblk out to its double
+               indirect blocks and shrinks through diskfs_truncate,
+               around the direct / indirect boundaries.  The block map is
+               checked against a model after each operation; crash images
+               must be e2fsck clean and hold one operation's inode.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.
@@ -135,6 +141,12 @@ in-core superblock with hyper.c's journaled diskfs_set_hypermetadata
 disk cache references, pokel_add marking pages dirty.  balloc.c writes
 the disk cache without faulting, so a referenced block (and the
 superblock and group descriptors) is never evicted in the harness.
+
+env/ext2glue.c has what getblk.c and truncate.c need from the rest of
+ext2fs and libdiskfs, for nodes jt_node_load builds from the disk
+inode: no file pager, so force_delayed_copies and a truncation inside a
+block (diskfs_node_rdwr) are not reached; diskfs_node_update writes the
+size, i_blocks and block pointers under a reservation.
 
 What is not modelled: pages larger
 than a block, and anything above the journal API.  Test images are

@@ -189,6 +189,10 @@ int jt_shadow (diskfs_transaction_t *txn, block_t b, void *out);
 extern void (*jt_store_write_hook) (uint64_t off, size_t len,
 				    const void *buf);
 
+/* With env/ext2glue.c: a real node for inode INO, from the disk cache,
+   with no file pager.  */
+struct node *jt_node_load (ino_t ino);
+
 /* Whether the calling thread is one of the harness's pager threads.  */
 int jt_on_pager_thread (void);
 

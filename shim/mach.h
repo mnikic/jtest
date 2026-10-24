@@ -72,4 +72,16 @@ static inline mach_port_t mach_task_self (void) { return 1; }
 kern_return_t vm_allocate (task_t, vm_address_t *, vm_size_t, boolean_t);
 kern_return_t vm_deallocate (task_t, vm_address_t, vm_size_t);
 
+/* For truncate.c: only reached for a node with a file pager, which the
+   harness's nodes do not have.  */
+#define MEMORY_OBJECT_COPY_NONE 0
+#define MEMORY_OBJECT_COPY_DELAY 2
+#define round_page(x) \
+  ((((vm_offset_t) (x)) + vm_page_size - 1) & ~(vm_page_size - 1))
+#define trunc_page(x) (((vm_offset_t) (x)) & ~(vm_page_size - 1))
+kern_return_t vm_map (task_t, vm_address_t *, vm_size_t, vm_address_t,
+		      boolean_t, mach_port_t, vm_offset_t, boolean_t,
+		      vm_prot_t, vm_prot_t, int);
+kern_return_t mach_port_deallocate (task_t, mach_port_t);
+
 #endif

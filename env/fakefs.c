@@ -28,6 +28,10 @@ struct ext2_super_block *sblock;	/* The in-core copy, as in hyper.c.  */
 static struct ext2_super_block *mapped_sblock;	/* In the disk cache.  */
 int sblock_dirty;
 struct ext2_group_desc *group_desc_image;
+const size_t _diskfs_sizeof_struct_node = sizeof (struct node);
+/* Stands for the disk pager: compared with, never used.  */
+static char disk_pager_token;
+struct pager *diskfs_disk_pager = (struct pager *) &disk_pager_token;
 unsigned long itb_per_group;
 unsigned long desc_per_block;
 pthread_spinlock_t global_lock;
@@ -831,6 +835,30 @@ jt_discard (block_t b, int file_pager)
   pthread_mutex_unlock (&page_lock);
 }
 
+/* libpager's pager_flush_some, for the disk pager: the pages are
+   dropped, dirty or not, and with WAIT a write of them in flight is
+   waited for.  trunc_indirect drops a freed indirect block's page this
+   way.  The file pagers of the harness's nodes do not exist.  */
+void
+pager_flush_some (struct pager *pager, vm_address_t offset, vm_size_t size,
+		  int wait)
+{
+  if (pager != diskfs_disk_pager)
+    return;
+  pthread_mutex_lock (&page_lock);
+  for (block_t b = offset >> log2_block_size;
+       b < (offset + size + block_size - 1) >> log2_block_size; b++)
+    {
+      while (wait && dcache.paging_out[b])
+	pthread_cond_wait (&page_out_done, &page_lock);
+      dcache.dirty[b] = 0;
+      if (b >= group_desc_block_end && !disk_cache_info[b].ref_count)
+	dcache.resident[b] = 0;
+      dcache.discarded[b] = 1;
+    }
+  pthread_mutex_unlock (&page_lock);
+}
+
 void
 jt_pager_call (void (*fn) (void *), void *arg)
 {
@@ -1143,7 +1171,8 @@ ext2_release_busy_blocks (block_t block, unsigned long count)
 static struct node *jnode;
 static int jnode_refs;
 
-error_t
+/* Weak: getblk.c's, where it is linked in.  */
+__attribute__ ((weak)) error_t
 ext2_getblk (struct node *node, block_t block, int create, block_t *disk_block)
 {
   if (node != jnode || create || block >= jnode_map_len)
@@ -1260,8 +1289,15 @@ load_journal_inode (void)
     _ext2_panic (__func__, "the journal inode uses extents; "
 		 "make the image with mke2fs -t ext3");
 
-  jnode = calloc (1, sizeof *jnode);
+  /* A real node, so that the real getblk.c can map it too.  */
+  jnode = calloc (1, sizeof (struct node) + sizeof (struct disknode));
+  jnode->cache_id = ino;
   jnode->allocsize = le32toh (di->i_size);
+  jnode->dn_stat.st_mode = le16toh (di->i_mode);
+  jnode->dn_stat.st_size = le32toh (di->i_size);
+  pthread_rwlock_init (&diskfs_node_disknode (jnode)->alloc_lock, NULL);
+  for (int i = 0; i < EXT2_N_BLOCKS; i++)
+    diskfs_node_disknode (jnode)->info.i_data[i] = le32toh (di->i_block[i]);
   jnode_map = malloc ((jnode->allocsize / block_size + 1) * sizeof *jnode_map);
   for (int i = 0; i < EXT2_NDIR_BLOCKS && di->i_block[i]; i++)
     jnode_map[jnode_map_len++] = le32toh (di->i_block[i]);
