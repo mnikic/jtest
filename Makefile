@@ -5,6 +5,7 @@
 #   make check            build and run every test
 #   make check SAN=address,undefined
 #   make check SAN=thread
+#   make COV=1 B=build/cov     for scripts/coverage.py
 #   make HURD=/path/to/hurd
 #   make check JOURNAL_C=patched/journal.c
 #   make check BALLOC_C=other/balloc.c
@@ -34,6 +35,13 @@ LDFLAGS += -pthread
 ifdef SAN
 CFLAGS += -fsanitize=$(SAN)
 LDFLAGS += -fsanitize=$(SAN)
+endif
+
+# Coverage (scripts/coverage.py): -Og, so that counts follow the source
+# and the extern inlines of the Hurd headers are still there.
+ifdef COV
+CFLAGS += -Og --coverage
+LDFLAGS += --coverage
 endif
 
 B ?= build
