@@ -291,7 +291,7 @@ main (int argc, char **argv)
   srand (argc > 2 ? atoi (argv[2]) : 1);
   jt_mount (image, 3, 0);
   pick_free_blocks (pool, NP);
-  jt_on_release = on_release;
+  JT_SET_HOOK (jt_on_release, on_release);
   buf = malloc (block_size);
   pthread_t ct;
   pthread_create (&ct, NULL, committer, NULL);
@@ -349,7 +349,10 @@ main (int argc, char **argv)
 	    free_block (txn, k, op);
 	}
 
+      /* on_release clears busy bits under alloc_lock.  */
+      pthread_mutex_lock (&alloc_lock);
       memcpy (snaps[op], now, sizeof now);
+      pthread_mutex_unlock (&alloc_lock);
       nops = op;
       if (sync)
 	diskfs_journal_commit_transaction (txn);

@@ -181,7 +181,7 @@ run_escape (const char *image)
   jt_mount (image, 2, 0);
   char *buf = malloc (block_size);
   pick_free_blocks (&x_blk, 1);
-  jt_store_write_hook = escape_hook;
+  JT_SET_HOOK (jt_store_write_hook, escape_hook);
 
   for (x_nver = 1; x_nver <= 6; x_nver++)
     {
@@ -212,7 +212,7 @@ run_escape (const char *image)
 	     "version %ld, not %d", x_blk, mversion (buf, x_blk, 1), x_nver);
     }
   x_nver--;
-  jt_store_write_hook = NULL;
+  JT_SET_HOOK (jt_store_write_hook, NULL);
 
   unsigned long warnings = jt_umount ();
   CHECK (jt_stale_reads () == 0, "%lu stale page-ins", jt_stale_reads ());
@@ -433,9 +433,9 @@ run_escape_abort (void)
       jt_pageout (big[i], 1, 0);
     }
   jt_drain ();
-  jt_store_fail_hook = abort_fail_hook;
+  JT_SET_HOOK (jt_store_fail_hook, abort_fail_hook);
   error_t err = jt_commit (txn);
-  jt_store_fail_hook = NULL;
+  JT_SET_HOOK (jt_store_fail_hook, NULL);
   CHECK (failed, "no log write failed");
   CHECK (err == EIO, "the commit returned %s", strerror (err));
 
@@ -489,7 +489,7 @@ run_oversize (const char *image)
       CHECK (freopen (log, "w", stderr), "%s", log);
       jt_mount (image, 2, 0);
       pick_free_blocks (blocks, BIG);
-      jt_store_write_hook = oversize_hook;
+      JT_SET_HOOK (jt_store_write_hook, oversize_hook);
       log_fd = fds[1];
       diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
       for (int i = 0; i < BIG; i++)

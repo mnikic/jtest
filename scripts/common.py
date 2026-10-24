@@ -49,6 +49,10 @@ def run (binary, test, seed, cwd, extra_args=(), env=None, timeout=1800,
     e = dict (os.environ)
     if env:
         e.update (env)
+    # Under TSan: the understood reports suppressed, and every report,
+    # not just the first, in the log.
+    e.setdefault ("TSAN_OPTIONS", "suppressions=%s halt_on_error=0 "
+                  "history_size=4" % os.path.join (JTEST, "tsan.supp"))
     if jobs:
         e["JT_JOBS"] = str (jobs)
     args = [binary, os.path.join ("build", image_for (test)), str (seed)]

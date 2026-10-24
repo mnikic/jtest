@@ -375,7 +375,7 @@ part3 (void)
   pthread_mutex_lock (&hold_lock);
   hold_armed = 1;
   pthread_mutex_unlock (&hold_lock);
-  jt_store_write_hook = hold_hook;
+  JT_SET_HOOK (jt_store_write_hook, hold_hook);
   pthread_create (&c, NULL, committer3, NULL);
   pthread_mutex_lock (&hold_lock);
   while (!hold_reached)
@@ -392,7 +392,7 @@ part3 (void)
   pthread_mutex_unlock (&hold_lock);
   pthread_join (s, NULL);
   pthread_join (c, NULL);
-  jt_store_write_hook = NULL;
+  JT_SET_HOOK (jt_store_write_hook, NULL);
   CHECK (!early, "the sync returned while the commit of an operation "
 	 "stopped before it was still writing the log");
 }

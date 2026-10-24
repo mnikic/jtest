@@ -100,7 +100,7 @@ alloc_block (int t, block_t goal)
 
   if (w->count && sequential)
     {
-      win_hits++;
+      __atomic_add_fetch (&win_hits, 1, __ATOMIC_RELAXED);
       if (win_mode == WIN_OLD)
 	{
 	  /* The block is already marked allocated.  */
@@ -279,7 +279,7 @@ owner (void *arg)
 	      block_t ind = alloc_block (t, goal);
 	      if (!ind)
 		{
-		  n_enospc++;
+		  __atomic_add_fetch (&n_enospc, 1, __ATOMIC_RELAXED);
 		  break;
 		}
 	      CHECK (!journal_get_write_access (txn, ind), "reserve ind");
@@ -291,7 +291,7 @@ owner (void *arg)
 	  block_t b = alloc_block (t, goal);
 	  if (!b)
 	    {
-	      n_enospc++;
+	      __atomic_add_fetch (&n_enospc, 1, __ATOMIC_RELAXED);
 	      break;
 	    }
 	  /* A new owner: ext2_new_block cleared its modified bit.  */

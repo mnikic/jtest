@@ -52,7 +52,7 @@ fail_hook (uint64_t off, size_t len, const void *buf)
   int match;
 
   (void) len;
-  if (failed)
+  if (__atomic_load_n (&failed, __ATOMIC_ACQUIRE))
     return 0;
   if (!strcmp (kind, "log-data"))
     match = journal && !is_jsb && !is_hdr;
@@ -68,7 +68,7 @@ fail_hook (uint64_t off, size_t len, const void *buf)
     match = !journal && jt_on_pager_thread () && len > 4096;
   else
     match = 0;
-  if (!match || ++matches < fail_at)
+  if (!match || __atomic_add_fetch (&matches, 1, __ATOMIC_RELAXED) < fail_at)
     return 0;
   __atomic_store_n (&failed, 1, __ATOMIC_RELEASE);
   failed_at_log = jt_log_count ();
@@ -134,7 +134,7 @@ run (const char *image, unsigned seed)
   jt_mount (image, 2, 0);
   pick_free_blocks (blocks, NBLK);
   history_init (&h, blocks, NBLK, OPS);
-  jt_store_fail_hook = fail_hook;
+  JT_SET_HOOK (jt_store_fail_hook, fail_hook);
 
   for (int op = 1; op <= OPS; op++)
     {
@@ -212,7 +212,7 @@ run (const char *image, unsigned seed)
   else
     CHECK (!ro, "read-only after a failed %s write", kind);
   warnings = jt_umount ();
-  jt_store_fail_hook = NULL;
+  JT_SET_HOOK (jt_store_fail_hook, NULL);
   jt_save_image ("build/t_ioerr.img");
   /* An aborted journal must not be mounted again before e2fsck.  */
   if (aborts)

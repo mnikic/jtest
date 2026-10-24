@@ -96,7 +96,7 @@ main (int argc, char **argv)
   pick_free_blocks (picked, 2);
   b_blk = picked[0];
   c_blk = picked[1];
-  jt_on_release = on_release;
+  JT_SET_HOOK (jt_on_release, on_release);
   buf = malloc (block_size);
 
   /* 1.  */

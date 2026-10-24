@@ -67,7 +67,7 @@ main (int argc, char **argv)
   pick_free_blocks (picked, 2);
   b1 = picked[0];
   b2 = picked[1];
-  jt_on_release = on_release;
+  JT_SET_HOOK (jt_on_release, on_release);
 
   /* 1.  */
   uint32_t before = jt_released_tid ();

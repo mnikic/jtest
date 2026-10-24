@@ -137,7 +137,7 @@ run (const char *image)
   pick_free_blocks (picked, 2);
   m_blk = picked[0];
   n_blk = picked[1];
-  jt_store_write_hook = hold_hook;
+  JT_SET_HOOK (jt_store_write_hook, hold_hook);
 
   /* 1.  T holds M and N at version 1; its commit writes the log, held.  */
   pthread_mutex_lock (&hold_lock);
@@ -187,7 +187,7 @@ run (const char *image)
   pthread_cond_broadcast (&hold_cond);
   pthread_mutex_unlock (&hold_lock);
   pthread_join (c, NULL);
-  jt_store_write_hook = NULL;
+  JT_SET_HOOK (jt_store_write_hook, NULL);
   CHECK (!diskfs_journal_commit_transaction (txn_r), "R's commit");
   r_returned_at = jt_log_count ();
 

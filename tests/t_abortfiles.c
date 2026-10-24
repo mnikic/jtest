@@ -57,7 +57,7 @@ main (int argc, char **argv)
   jt_inode_globals ();
   files_init ();
   files_eio_ok = 1;
-  jt_store_fail_hook = fail_hook;
+  JT_SET_HOOK (jt_store_fail_hook, fail_hook);
 
   for (int i = 0; i < NTHREADS; i++)
     {
@@ -103,7 +103,7 @@ main (int argc, char **argv)
 
   /* diskfs_shutdown, read-only: no sync, the journal left as it is.  */
   jt_abandon ();
-  jt_store_fail_hook = NULL;
+  JT_SET_HOOK (jt_store_fail_hook, NULL);
   CHECK (jt_journal_check () == JOURNAL_NEEDS_REPLAY,
 	 "the aborted journal could be mounted before e2fsck");
 

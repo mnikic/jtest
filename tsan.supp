@@ -1,0 +1,19 @@
+# ThreadSanitizer reports that are understood, for TSAN_OPTIONS
+# suppressions= (scripts/common.py passes this file by default).
+# Anything else TSan reports is a new race.
+
+# The stop-time sweep copies a block from the disk cache with the
+# journal lock dropped, while a handle that joined meanwhile may edit
+# it (journal_stop_transaction_locked).  Such a copy is torn but never
+# commits: the editor's journal_get_write_access and journal_mark_dirty
+# each set needs_copy again, and the last handle to stop sweeps again.
+# t_sweep_race shows it, and fails if either re-arm is removed.
+race:journal_stop_transaction_locked
+
+# libdiskfs's node cache: a new node is locked, then nodecache_lock is
+# taken to insert it, while a lookup that finds a cached node takes its
+# lock under nodecache_lock (diskfs_nref).  The new node is not in the
+# cache yet, so no lookup can wait for its lock.  (The error path of
+# diskfs_cached_lookup_context, which removes a node it has published,
+# is a real case of the same order; see the jtest notes.)
+deadlock:diskfs_cached_lookup_context

@@ -210,11 +210,16 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
 
   if (off + len > store_bytes)
     return EIO;
-  if (jt_store_write_hook)
-    jt_store_write_hook (off, len, buf);
-  if (jt_store_fail_hook)
+  /* Tests set the hooks while other threads write (JT_SET_HOOK).  */
+  void (*write_hook) (uint64_t, size_t, const void *)
+    = __atomic_load_n (&jt_store_write_hook, __ATOMIC_ACQUIRE);
+  int (*fail_hook) (uint64_t, size_t, const void *)
+    = __atomic_load_n (&jt_store_fail_hook, __ATOMIC_ACQUIRE);
+  if (write_hook)
+    write_hook (off, len, buf);
+  if (fail_hook)
     {
-      int err = jt_store_fail_hook (off, len, buf);
+      int err = fail_hook (off, len, buf);
       if (err)
 	{
 	  /* Nothing reaches the disk.  */
@@ -257,8 +262,10 @@ store_read (struct store *s, store_offset_t addr, size_t amount,
   pthread_mutex_lock (&log_lock);
   memcpy ((void *) p, store_mem + off, amount);
   pthread_mutex_unlock (&log_lock);
-  if (jt_store_read_hook)
-    jt_store_read_hook (off, amount);
+  void (*read_hook) (uint64_t, size_t)
+    = __atomic_load_n (&jt_store_read_hook, __ATOMIC_ACQUIRE);
+  if (read_hook)
+    read_hook (off, amount);
   *buf = (void *) p;
   *len = amount;
   return 0;
@@ -1351,8 +1358,10 @@ ref_block (block_t b)
 void *
 disk_cache_block_ref_mapped (block_t block)
 {
-  if (jt_ref_mapped_hook)
-    jt_ref_mapped_hook (block);
+  void (*mapped_hook) (block_t)
+    = __atomic_load_n (&jt_ref_mapped_hook, __ATOMIC_ACQUIRE);
+  if (mapped_hook)
+    mapped_hook (block);
   pthread_mutex_lock (&page_lock);
   ref_block (block);
   pthread_mutex_unlock (&page_lock);
@@ -1480,8 +1489,10 @@ pokel_sync (struct pokel *pokel, int wait)
 __attribute__ ((weak)) void
 ext2_release_busy_blocks (block_t block, unsigned long count)
 {
-  if (jt_on_release)
-    jt_on_release (block, count);
+  void (*release_hook) (block_t, unsigned long)
+    = __atomic_load_n (&jt_on_release, __ATOMIC_ACQUIRE);
+  if (release_hook)
+    release_hook (block, count);
 }
 
 static struct node *jnode;
@@ -1794,7 +1805,7 @@ jt_mount (const char *image, int npagers, int flags)
   npagers_running = npagers;
   pthread_mutex_unlock (&req_lock);
 
-  ext2_journal = journal_create (jnode);
+  __atomic_store_n (&ext2_journal, journal_create (jnode), __ATOMIC_RELEASE);
   jt_journal_started (ext2_journal);
   sblock->s_feature_incompat |= htole32 (EXT3_FEATURE_INCOMPAT_RECOVER);
   mapped_sblock->s_feature_incompat |= htole32 (EXT3_FEATURE_INCOMPAT_RECOVER);

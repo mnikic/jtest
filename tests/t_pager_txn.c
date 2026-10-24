@@ -187,7 +187,7 @@ part2 (void)
   pthread_mutex_lock (&hold_lock);
   hold_armed = 1;
   pthread_mutex_unlock (&hold_lock);
-  jt_store_write_hook = hold_hook;
+  JT_SET_HOOK (jt_store_write_hook, hold_hook);
   pthread_create (&c, NULL, committer2, NULL);
   pthread_mutex_lock (&hold_lock);
   while (!hold_reached)
@@ -215,7 +215,7 @@ part2 (void)
   pthread_mutex_unlock (&hold_lock);
   pthread_join (r, NULL);
   pthread_join (c, NULL);
-  jt_store_write_hook = NULL;
+  JT_SET_HOOK (jt_store_write_hook, NULL);
   CHECK (rpc_waited == 1, "journal_wait_freed_blocks returned %d on an "
 	 "RPC thread", rpc_waited);
 }

@@ -119,7 +119,7 @@ main (int argc, char **argv)
   pick_free_blocks (picked, 2);
   meta = picked[0];
   dir = picked[1];
-  jt_store_write_hook = hold_hook;
+  JT_SET_HOOK (jt_store_write_hook, hold_hook);
 
   /* 1.  B in a committed transaction, its page dirty.  */
   txn = diskfs_journal_start_transaction ();
@@ -159,7 +159,7 @@ main (int argc, char **argv)
   pattern (buf, dir, 2);
   jt_dir_edit (dir, 0, buf, block_size);
   jt_drain ();
-  jt_store_write_hook = NULL;
+  JT_SET_HOOK (jt_store_write_hook, NULL);
 
   /* 7.  The image, and the end of A's handle; C's commit goes on.  */
   CHECK (!jt_dir_mark_dirty (txn_t, dir), "mark in T");

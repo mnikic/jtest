@@ -174,7 +174,7 @@ main (int argc, char **argv)
   jt_mount (image, 2, 0);
   jt_inode_globals ();
   files_init ();
-  jt_store_read_hook = hold_read;
+  JT_SET_HOOK (jt_store_read_hook, hold_read);
   /* hyper.c's ext2fs_clean is set by get_hypermetadata, which the
      harness does not run.  */
   jt_expected_warning = "UNCLEANED FILESYSTEM NOW WRITABLE";

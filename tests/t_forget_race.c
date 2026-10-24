@@ -99,8 +99,8 @@ main (int argc, char **argv)
   blk = picked[0];
   bitmap = picked[1];
   memcpy (fill, picked + 2, sizeof fill);
-  jt_on_release = on_release;
-  jt_store_write_hook = hold_hook;
+  JT_SET_HOOK (jt_on_release, on_release);
+  JT_SET_HOOK (jt_store_write_hook, hold_hook);
 
   /* 1.  */
   txn = diskfs_journal_start_transaction ();
@@ -153,7 +153,7 @@ main (int argc, char **argv)
   pthread_mutex_unlock (&hold_lock);
 
   warnings = jt_umount ();
-  jt_store_write_hook = NULL;
+  JT_SET_HOOK (jt_store_write_hook, NULL);
   CHECK (warnings == 0, "%lu journal warnings", warnings);
   CHECK (jt_stale_reads () == 0, "%lu stale page-ins", jt_stale_reads ());
   CHECK (pattern_version (jt_disk_block (blk), blk) == 3,

@@ -66,6 +66,10 @@ void jt_pageout (block_t b, int evict, int wait);
    jt_umount's warnings.  */
 extern const char *jt_expected_warning;
 
+/* Set one of the jt_*_hook pointers (or jt_on_release) while other
+   threads may call it.  */
+#define JT_SET_HOOK(hook, fn) __atomic_store_n (&(hook), (fn), __ATOMIC_RELEASE)
+
 /* Blocks whose latest version, in the disk cache or the directory
    pager, is not on disk: how many in *COUNT, and the first.  Journal
    blocks are not counted.  */

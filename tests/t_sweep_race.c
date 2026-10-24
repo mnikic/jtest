@@ -108,7 +108,7 @@ main (int argc, char **argv)
   pthread_mutex_lock (&hold_lock);
   hold_armed = 1;
   pthread_mutex_unlock (&hold_lock);
-  jt_ref_mapped_hook = hold_hook;
+  JT_SET_HOOK (jt_ref_mapped_hook, hold_hook);
   pthread_create (&sweeper, NULL, thread_s, NULL);
   pthread_mutex_lock (&hold_lock);
   while (!hold_reached)
@@ -128,7 +128,7 @@ main (int argc, char **argv)
   pthread_cond_broadcast (&hold_cond);
   pthread_mutex_unlock (&hold_lock);
   pthread_join (sweeper, NULL);
-  jt_ref_mapped_hook = NULL;
+  JT_SET_HOOK (jt_ref_mapped_hook, NULL);
 
   /* The race happened: the shadow holds the torn copy.  */
   CHECK (!jt_shadow (a, blk, buf), "no shadow");
