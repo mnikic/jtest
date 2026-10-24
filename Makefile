@@ -24,6 +24,7 @@ CFLAGS += -std=gnu11 -Wall -Wno-unused-function -pthread
 ifneq ($(abspath $(JOURNAL_C)),$(abspath $(HURD)/ext2fs/journal.c))
 CPPFLAGS += -I$(dir $(JOURNAL_C))
 endif
+CPPFLAGS += -include shim/hurdstat.h
 CPPFLAGS += -D_GNU_SOURCE -Ishim -Ienv -I$(HURD) -I$(HURD)/libshouldbeinlibc \
 	    -I$(HURD)/libports -I$(HURD)/ext2fs
 # Debug messages go to the flight recorder only; it is dumped on aborts.
@@ -41,7 +42,19 @@ TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_*.c))
 BALLOC_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_balloc*.c))
 # Tests on the real getblk.c and truncate.c (and balloc.c) of the tree.
 EXT2_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_trunc*.c))
-EXT2_OBJS = $(B)/balloc.o $(B)/getblk.o $(B)/truncate.o $(B)/ext2glue.o
+EXT2_OBJS = $(B)/balloc.o $(B)/getblk.o $(B)/truncate.o $(B)/ext2glue.o \
+	    $(B)/nodeglue.o
+# Tests on the real inode.c, ialloc.c, orphan.c and hyper.c too, and
+# libdiskfs's node cache, references and drop.
+INODE_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_orphan*.c))
+LIBDISKFS_NODE = node-cache node-drop node-nput node-nputl node-nref \
+		 node-nrefl node-nrele node-nrelel node-make node-update \
+		 node-times node-lastref node-create validate-owner \
+		 validate-group validate-mode
+INODE_OBJS = $(B)/balloc.o $(B)/getblk.o $(B)/truncate.o $(B)/ext2glue.o \
+	     $(B)/inodeglue.o $(B)/inode.o $(B)/ialloc.o $(B)/orphan.o \
+	     $(B)/hyper.o $(patsubst %,$(B)/ld-%.o,$(LIBDISKFS_NODE)) \
+	     $(B)/idvec.o
 
 all: $(TESTS) $(B)/base.img $(B)/balloc.img $(B)/big.img
 
@@ -86,6 +99,35 @@ $(B)/truncate.o: $(HURD)/ext2fs/truncate.c | $(B)
 $(B)/ext2glue.o: env/ext2glue.c env/jtest.h | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
+$(B)/nodeglue.o: env/nodeglue.c env/jtest.h | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(B)/inodeglue.o: env/inodeglue.c env/jtest.h | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+# Where inode.c, ialloc.c, orphan.c and hyper.c come from: a directory
+# of patched copies can stand in for the tree's.
+INODE_SRC ?= $(HURD)/ext2fs
+$(B)/inode.o $(B)/ialloc.o $(B)/orphan.o $(B)/hyper.o: $(B)/%.o: \
+		$(INODE_SRC)/%.c | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(B)/idvec.o: $(HURD)/libshouldbeinlibc/idvec.c | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+# A patched copy can stand in for the tree's.
+NODE_CREATE_C ?= $(HURD)/libdiskfs/node-create.c
+$(B)/ld-node-create.o: $(NODE_CREATE_C) | $(B)
+	$(CC) $(CPPFLAGS) -I$(HURD)/libdiskfs $(CFLAGS) -c -o $@ $<
+
+$(B)/ld-%.o: $(HURD)/libdiskfs/%.c | $(B)
+	$(CC) $(CPPFLAGS) -I$(HURD)/libdiskfs $(CFLAGS) -c -o $@ $<
+
+$(INODE_TESTS): $(B)/t_orphan%: tests/t_orphan%.c tests/common.h $(ENV) \
+		$(INODE_OBJS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(INODE_OBJS) $(LDFLAGS) \
+	  -Wl,--no-warn-execstack
+
 $(EXT2_TESTS): $(B)/t_trunc%: tests/t_trunc%.c tests/common.h $(ENV) \
 	       $(EXT2_OBJS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(EXT2_OBJS) $(LDFLAGS) \
@@ -114,7 +156,7 @@ $(B)/balloc.img: | $(B)
 
 check: all
 	@for t in $(TESTS); do \
-	  case $$t in *t_balloc*|*t_trunc*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
+	  case $$t in *t_balloc*|*t_trunc*|*t_orphan*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
 	  $$t $$img 2>$$t.log || { tail -40 $$t.log; echo "FAIL: $$t (log: $$t.log)"; exit 1; }; \
 	done
 

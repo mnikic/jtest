@@ -177,6 +177,10 @@ typedef const char *(*jt_crash_check_fn) (size_t n, int torn,
    as build/NAME-crash-N.img and exits.  Returns the number of images
    checked.  Call it after jt_umount or jt_abandon.  */
 size_t jt_crash_check (const char *name, jt_crash_check_fn check, void *arg);
+/* If set, run instead of e2fsck -fn on each replayed crash image IMG,
+   with its output to OUT: NULL if the image is right, or what is wrong.
+   CHECK may then be NULL.  */
+extern const char *(*jt_crash_fsck) (const char *img, const char *out);
 
 /* Write the current store to PATH.  */
 void jt_save_image (const char *path);
@@ -199,6 +203,10 @@ extern void (*jt_store_write_hook) (uint64_t off, size_t len,
 /* With env/ext2glue.c: a real node for inode INO, from the disk cache,
    with no file pager.  */
 struct node *jt_node_load (ino_t ino);
+/* With env/ext2glue.c: set the globals ext2fs computes at mount.  */
+void jt_ext2_globals (void);
+/* With env/inodeglue.c: the same, for inode.c and the rest too.  */
+void jt_inode_globals (void);
 
 /* Whether the calling thread is one of the harness's pager threads.  */
 int jt_on_pager_thread (void);

@@ -15,14 +15,16 @@ static const char *
 tmp_dir (void)
 {
   const char *dir = getenv ("JT_TMP");
-  struct stat st;
 
   if (dir)
     return dir;
-  if (!stat ("/dev/shm", &st) && S_ISDIR (st.st_mode))
+  /* The host's stat is out of reach (shim/hurdstat.h).  */
+  if (!access ("/dev/shm/.", W_OK))
     return "/dev/shm";
   return "build";
 }
+
+const char *(*jt_crash_fsck) (const char *img, const char *out);
 
 /* Check the crash after the first N log entries, the last one torn with
    TORN, in IMG.  Returns NULL if it is right, or what is wrong.  */
@@ -42,6 +44,13 @@ check_one (size_t n, int torn, const char *img, const char *fsck_out,
       snprintf (msg, sizeof msg, "e2fsck -E journal_only exit %d", status);
       return msg;
     }
+  if (jt_crash_fsck)
+    {
+      const char *err = jt_crash_fsck (img, fsck_out);
+      if (err)
+	return err;
+      return check ? check (n, torn, img, arg) : NULL;
+    }
   status = jt_run ("e2fsck -fn %s >%s 2>&1", img, fsck_out);
   if (status)
     {
@@ -49,7 +58,7 @@ check_one (size_t n, int torn, const char *img, const char *fsck_out,
 		status);
       return msg;
     }
-  return check (n, torn, img, arg);
+  return check ? check (n, torn, img, arg) : NULL;
 }
 
 /* Worker W of JOBS: check every JOBS-th point.  Exits 0 if all are right,

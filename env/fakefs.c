@@ -23,7 +23,9 @@ unsigned int block_size;
 unsigned int log2_block_size;
 unsigned log2_dev_blocks_per_fs_block;
 unsigned long groups_count;
-unsigned int sblock_block = 1;
+/* Weak, like the other fakes of hyper.c, for where the real one is
+   linked in.  */
+__attribute__ ((weak)) unsigned int sblock_block = 1;
 struct ext2_super_block *sblock;	/* The in-core copy, as in hyper.c.  */
 static struct ext2_super_block *mapped_sblock;	/* In the disk cache.  */
 int sblock_dirty;
@@ -35,7 +37,7 @@ struct pager *diskfs_disk_pager = (struct pager *) &disk_pager_token;
 unsigned long itb_per_group;
 unsigned long desc_per_block;
 pthread_spinlock_t global_lock;
-unsigned char *modified_global_blocks;
+__attribute__ ((weak)) unsigned char *modified_global_blocks;
 pthread_spinlock_t modified_global_blocks_lock;
 int diskfs_synchronous;
 struct pokel global_pokel;
@@ -1106,8 +1108,9 @@ pokel_add (struct pokel *pokel, void *loc, vm_size_t length)
 }
 
 /* The journaled path of hyper.c's diskfs_set_hypermetadata: the flag
-   read, and the flag cleared and the copy made, under global_lock.  */
-error_t
+   read, and the flag cleared and the copy made, under global_lock.
+   Weak: hyper.c's, where it is linked in.  */
+__attribute__ ((weak)) error_t
 diskfs_set_hypermetadata (int wait, int clean)
 {
   diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
@@ -1182,14 +1185,15 @@ ext2_getblk (struct node *node, block_t block, int create, block_t *disk_block)
   return 0;
 }
 
-void
+/* Weak: libdiskfs's, where it is linked in.  */
+__attribute__ ((weak)) void
 diskfs_nref (struct node *np)
 {
   (void) np;
   __atomic_add_fetch (&jnode_refs, 1, __ATOMIC_RELAXED);
 }
 
-void
+__attribute__ ((weak)) void
 diskfs_nrele (struct node *np)
 {
   (void) np;
@@ -1211,7 +1215,7 @@ write_sblock (void)
   store_sync (store);
 }
 
-void
+__attribute__ ((weak)) void
 ext2_clear_needs_recovery (void)
 {
   sblock->s_feature_incompat &= ~htole32 (EXT3_FEATURE_INCOMPAT_RECOVER);
@@ -1293,6 +1297,9 @@ load_journal_inode (void)
   /* A real node, so that the real getblk.c can map it too.  */
   jnode = calloc (1, sizeof (struct node) + sizeof (struct disknode));
   jnode->cache_id = ino;
+  /* A reference that is never dropped, as ext2fs's from its lookup.  */
+  refcounts_init (&jnode->refcounts, 1, 0);
+  pthread_mutex_init (&jnode->lock, NULL);
   jnode->allocsize = le32toh (di->i_size);
   jnode->dn_stat.st_mode = le16toh (di->i_mode);
   jnode->dn_stat.st_size = le32toh (di->i_size);
@@ -1331,14 +1338,14 @@ static void
 load_image (const char *path)
 {
   int fd = open (path, O_RDONLY);
-  struct stat st;
+  off_t size = fd < 0 ? -1 : lseek (fd, 0, SEEK_END);
 
-  if (fd < 0 || fstat (fd, &st))
+  if (size < 0 || lseek (fd, 0, SEEK_SET))
     {
       perror (path);
       exit (2);
     }
-  store_bytes = st.st_size;
+  store_bytes = size;
   store_mem = malloc (store_bytes);
   store_base = malloc (store_bytes);
   if (read (fd, store_base, store_bytes) != (ssize_t) store_bytes)
