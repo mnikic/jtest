@@ -81,6 +81,11 @@ Builds ext2fs/journal.c straight from the Hurd tree (HURD=, default
                still writing.  Every operation stopped before a sync that
                returned, the inodes it wrote, and with a waiting sync the
                file data written before it, must survive any crash.
+               t_remount: a second mount on a log full of the first
+               mount's transactions, after a clean unmount, or after a
+               crash and e2fsck's replay; and with both mounts' log
+               layouts lined up, so that a reused sequence number would
+               replay the first mount's transactions.
                Each crash image must hold whole operations only, and
                every operation stopped before a commit that returned.
   patches/     Fixes found with the harness, against ext2fs/journal.c.
