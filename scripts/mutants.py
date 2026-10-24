@@ -261,6 +261,13 @@ MUTANTS = [
             """	      if (0)""",
             "t_late_edit",
             why="the edit is not carried into the next transaction"),
+    # Freed blocks given back in transaction order (e57b53ac9).
+    Mutant ("release-unordered", J,
+            """  while (tid_gt (freed_tid, journal->j_released_tid + 1))
+    JOURNAL_WAIT (&journal->j_commit_done, journal);""",
+            "",
+            "t_release_order",
+            why="a newer commit's release goes before an older one's"),
 ]
 
 
