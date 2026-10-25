@@ -131,6 +131,10 @@ NODE_CREATE_C ?= $(HURD)/libdiskfs/node-create.c
 $(B)/ld-node-create.o: $(NODE_CREATE_C) | $(B)
 	$(CC) $(CPPFLAGS) -I$(HURD)/libdiskfs $(CFLAGS) -c -o $@ $<
 
+NODE_CACHE_C ?= $(HURD)/libdiskfs/node-cache.c
+$(B)/ld-node-cache.o: $(NODE_CACHE_C) | $(B)
+	$(CC) $(CPPFLAGS) -I$(HURD)/libdiskfs $(CFLAGS) -c -o $@ $<
+
 $(B)/ld-%.o: $(HURD)/libdiskfs/%.c | $(B)
 	$(CC) $(CPPFLAGS) -I$(HURD)/libdiskfs $(CFLAGS) -c -o $@ $<
 
