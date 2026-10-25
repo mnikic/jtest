@@ -26,7 +26,9 @@ import sys
 sys.path.insert (0, os.path.dirname (os.path.abspath (__file__)))
 import common
 
-HURD = os.path.abspath (os.path.join (common.JTEST, "..", "cross-hurd", "src",
+# The tree to mutate: $HURD, as for make, or the one next to jtest.
+HURD = os.path.abspath (os.environ.get ("HURD") or
+                        os.path.join (common.JTEST, "..", "cross-hurd", "src",
                                       "hurd"))
 
 
