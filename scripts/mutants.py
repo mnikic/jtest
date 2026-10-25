@@ -315,6 +315,27 @@ MUTANTS = [
     {""",
             "t_nodecache", ["readwait"],
             why="a lookup hands out a node whose read failed while it waited"),
+    # Directory blocks through a file pager (t_fdir, env/fpager.c).
+    Mutant ("dir-overlay-off", J,
+            """  if (!err && journal && *read_amount > 0)
+    /* Pass the actual amount read, just in case it was a short read */""",
+            """  if (0)
+    /* Pass the actual amount read, just in case it was a short read */""",
+            "t_fdir",
+            why="a page-in of an intercepted directory block reads home"),
+    Mutant ("dir-image-lost", J,
+            """      memcpy (jb->jb_shadow_data, journal_external_scratch, block_size);
+      jb->needs_copy = 0;""",
+            """      jb->needs_copy = 0;""",
+            "t_fdir",
+            why="journal_mark_dirty_external drops the directory block's image"),
+    Mutant ("dir-hazard-off", J,
+            """  if (jb_run || jb_commit || jb_aborted)
+    {""",
+            """  if (0)
+    {""",
+            "t_fdir",
+            why="a page-out of an uncommitted directory block goes home"),
 ]
 
 
@@ -383,10 +404,16 @@ def main ():
     ap.add_argument ("--out", default="mutants")
     ap.add_argument ("--check", action="store_true")
     ap.add_argument ("--list", action="store_true")
+    ap.add_argument ("--test", help="run every mutant chosen against this "
+                     "test instead of its own, with no arguments; a miss "
+                     "is then only information")
     ap.add_argument ("names", nargs="*")
     a = ap.parse_args ()
 
     chosen = [m for m in MUTANTS if not a.names or m.name in a.names]
+    if a.test:
+        for m in chosen:
+            m.test, m.args, m.env, m.min_caught = a.test, [], dict (m.env), 1
     unknown = set (a.names) - {m.name for m in MUTANTS}
     if unknown:
         sys.exit ("no such mutant: " + ", ".join (sorted (unknown)))

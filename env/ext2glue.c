@@ -42,7 +42,8 @@ diskfs_file_update (struct node *np, int wait)
   diskfs_node_update (np, wait);
 }
 
-mach_port_t
+/* Weak: env/fpager.c's, where it is linked in.  */
+__attribute__ ((weak)) mach_port_t
 diskfs_get_filemap (struct node *np, vm_prot_t prot)
 {
   (void) np;
@@ -50,7 +51,8 @@ diskfs_get_filemap (struct node *np, vm_prot_t prot)
   not_here (__func__);
 }
 
-error_t
+/* Weak: env/fpager.c's, where it is linked in.  */
+__attribute__ ((weak)) error_t
 diskfs_node_rdwr (struct node *np, char *data, loff_t off,
 		  mach_msg_type_number_t amt, int dir, struct protid *cred,
 		  mach_msg_type_number_t *amtread)
@@ -60,7 +62,8 @@ diskfs_node_rdwr (struct node *np, char *data, loff_t off,
   not_here (__func__);
 }
 
-kern_return_t
+/* Weak: env/fpager.c's, where it is linked in.  */
+__attribute__ ((weak)) kern_return_t
 vm_map (task_t t, vm_address_t *a, vm_size_t s, vm_address_t m, boolean_t any,
 	mach_port_t o, vm_offset_t off, boolean_t copy, vm_prot_t cur,
 	vm_prot_t max, int inh)

@@ -144,6 +144,19 @@ $(INODE_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
 	  -Wl,--no-warn-execstack -Wl,--wrap=diskfs_set_node_times \
 	  -Wl,--wrap=diskfs_make_node_alloc -Wl,--wrap=diskfs_node_norefs
 
+# Tests on the real directory code too, with a file pager for nodes
+# (env/fpager.c).
+DIR_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_fdir*.c))
+$(B)/fpager.o: env/fpager.c env/jtest.h | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(DIR_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
+	      $(INODE_OBJS) $(B)/fpager.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(INODE_OBJS) \
+	  $(B)/fpager.o $(LDFLAGS) -Wl,--no-warn-execstack \
+	  -Wl,--wrap=diskfs_set_node_times -Wl,--wrap=diskfs_make_node_alloc \
+	  -Wl,--wrap=diskfs_node_norefs -Wl,--wrap=munmap
+
 $(EXT2_TESTS): $(B)/t_trunc%: tests/t_trunc%.c tests/common.h $(ENV) \
 	       $(EXT2_OBJS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(EXT2_OBJS) $(LDFLAGS) \
@@ -182,7 +195,7 @@ $(B)/full.img: $(B)/balloc.img
 
 check: all
 	@for t in $(TESTS); do \
-	  case $$t in *t_balloc_full*|*t_balloc_lock*) img=$(B)/full.img;; *t_balloc*|*t_trunc*|*t_orphan*|*t_rwcycle*|*t_abortfiles*|*t_nodecache*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
+	  case $$t in *t_balloc_full*|*t_balloc_lock*) img=$(B)/full.img;; *t_balloc*|*t_trunc*|*t_orphan*|*t_rwcycle*|*t_abortfiles*|*t_nodecache*|*t_fdir*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
 	  $$t $$img 2>$$t.log || { tail -40 $$t.log; echo "FAIL: $$t (log: $$t.log)"; exit 1; }; \
 	done
 

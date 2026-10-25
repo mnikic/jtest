@@ -137,6 +137,25 @@ error_t jt_dir_mark_dirty (diskfs_transaction_t *txn, block_t b);
    pager_unlock_page: the thread is marked as a pager thread
    (journal_thread_set_pager), so a transaction FN starts never waits.  */
 void jt_pager_call (void (*fn) (void *), void *arg);
+/* The same, without waiting for FN; jt_drain waits for it.  */
+void jt_pager_call_async (void (*fn) (void *), void *arg);
+/* Hooks for env/fpager.c: a SIGSEGV at ADDR, with the signal's ucontext,
+   returns 1 if it was one of its mappings and is handled; called by
+   jt_umount before the journal stops; the page-out that follows is one
+   that keeps the page (pager_write_keeps_page) or not.  */
+extern int (*jt_fault_hook) (void *addr, void *uctx);
+extern void (*jt_umount_hook) (void);
+void jt_set_keeps_page (int keeps);
+
+/* env/fpager.c, a file pager for nodes, where it is linked in.  Write
+   page PAGE of NP's pager out, evicting it with EVICT, and wait with
+   WAIT; sync every pager (what jt_umount calls); the page-ins that did
+   not get what an eviction wrote; pager activity.  */
+void jt_fp_pageout (struct node *np, size_t page, int evict, int wait);
+void jt_fp_sync_all (void);
+unsigned long jt_fp_stale_reads (void);
+void jt_fp_counts (unsigned long *pageins, unsigned long *pageouts,
+		   unsigned long *unlocks);
 
 /* Write out every dirty block of the directory pager and the disk cache,
    keeping them, and wait: as without a journal, or when it stops.  */

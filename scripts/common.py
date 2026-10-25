@@ -26,7 +26,7 @@ def image_for (test):
     if test.startswith (("t_balloc_full", "t_balloc_lock")):
         return "full.img"
     for p in ("t_balloc", "t_trunc", "t_orphan", "t_rwcycle", "t_abortfiles",
-              "t_nodecache"):
+              "t_nodecache", "t_fdir"):
         if test.startswith (p):
             return "balloc.img"
     return "base.img"
@@ -51,9 +51,12 @@ def run (binary, test, seed, cwd, extra_args=(), env=None, timeout=1800,
     if env:
         e.update (env)
     # Under TSan: the understood reports suppressed, and every report,
-    # not just the first, in the log.
+    # not just the first, in the log.  A fault on a file pager's mapping
+    # waits for the page in the SIGSEGV handler (env/fpager.c), which is
+    # not signal-safe, by design.
     e.setdefault ("TSAN_OPTIONS", "suppressions=%s halt_on_error=0 "
-                  "history_size=4" % os.path.join (JTEST, "tsan.supp"))
+                  "history_size=4 report_signal_unsafe=0"
+                  % os.path.join (JTEST, "tsan.supp"))
     if jobs:
         e["JT_JOBS"] = str (jobs)
     args = [binary, os.path.join ("build", image_for (test)), str (seed)]

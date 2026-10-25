@@ -9,3 +9,10 @@
 # each set needs_copy again, and the last handle to stop sweeps again.
 # t_sweep_race shows it, and fails if either re-arm is removed.
 race:journal_stop_transaction_locked
+
+# ext2fs's ext2_getblk updates the node's sequential-allocation hint
+# (i_next_alloc_block, i_next_alloc_goal) on every call, a lookup with
+# CREATE 0 too, and find_block calls it with alloc_lock held only for
+# reading: two page-outs of one file race on the hint.  Older than the
+# journal; the cost is a worse allocation goal.  Found by t_fdir.
+race:ext2_getblk

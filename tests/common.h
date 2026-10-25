@@ -91,6 +91,8 @@ struct history
   uint32_t *snaps;		/* After operation J: snaps[J * nblk ...].  */
   size_t *synced;		/* Log length when J's sync commit returned,
 				   or SIZE_MAX.  */
+  /* What reads a block's version, if not pattern_version.  */
+  long (*version) (const void *buf, block_t b);
   int nops, maxops;
 };
 
@@ -156,7 +158,8 @@ history_check (size_t n, int torn, const char *img, void *arg)
     {
       CHECK (!fseeko (f, (off_t) h->blocks[i] << log2_block_size, SEEK_SET)
 	     && fread (buf, block_size, 1, f) == 1, "read %s", img);
-      got[i] = pattern_version (buf, h->blocks[i]);
+      got[i] = h->version ? h->version (buf, h->blocks[i])
+	: pattern_version (buf, h->blocks[i]);
     }
   fclose (f);
   free (buf);

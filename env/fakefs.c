@@ -666,6 +666,17 @@ static int npagers_running;
 static unsigned long in_flight;	/* Requests queued or being served.  */
 
 static __thread int keeps_page;
+
+/* For the file pager of env/fpager.c, which writes on pager threads.  */
+void
+jt_set_keeps_page (int keeps)
+{
+  keeps_page = keeps;
+}
+
+/* Set by env/fpager.c where it is linked in.  */
+int (*jt_fault_hook) (void *addr, void *uctx);
+void (*jt_umount_hook) (void);
 static __thread int on_pager_thread;
 
 int
@@ -797,8 +808,10 @@ view_release (block_t b)
 static void
 held_fault (int sig, siginfo_t *si, void *ctx)
 {
-  (void) ctx;
   char *a = si->si_addr;
+  /* A file pager's mapping (env/fpager.c).  */
+  if (jt_fault_hook && jt_fault_hook (a, ctx))
+    return;
   if (disk_cache && a >= (char *) disk_cache
       && a < (char *) disk_cache + disk_cache_size)
     {
@@ -1160,6 +1173,23 @@ pager_flush_some (struct pager *pager, vm_address_t offset, vm_size_t size,
       dcache.discarded[b] = 1;
     }
   pthread_mutex_unlock (&page_lock);
+}
+
+/* FN (ARG) on a pager thread, not waited for.  */
+void
+jt_pager_call_async (void (*fn) (void *), void *arg)
+{
+  struct req *r = calloc (1, sizeof *r);
+
+  r->kind = REQ_CALL;
+  r->fn = fn;
+  r->arg = arg;
+  pthread_mutex_lock (&req_lock);
+  in_flight++;
+  *req_tail = r;
+  req_tail = &r->next;
+  pthread_cond_signal (&req_ready);
+  pthread_mutex_unlock (&req_lock);
 }
 
 void
@@ -1858,6 +1888,8 @@ jt_umount (void)
 {
   /* diskfs_shutdown syncs the file pagers before the journal stops.  */
   sync_cache (&dirpager);
+  if (jt_umount_hook)
+    jt_umount_hook ();
   diskfs_journal_shutdown ();
   stop_pagers ();
   alarm (0);
