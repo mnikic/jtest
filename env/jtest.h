@@ -145,6 +145,12 @@ void jt_pager_call_async (void (*fn) (void *), void *arg);
    that keeps the page (pager_write_keeps_page) or not.  */
 extern int (*jt_fault_hook) (void *addr, void *uctx);
 extern void (*jt_umount_hook) (void);
+/* If set, called with each node diskfs_node_norefs frees, first.  */
+extern void (*jt_norefs_hook) (struct node *np);
+/* If set, the watchdog calls it before it reports the threads: for a
+   test to print what it knows (not async-signal-safe; the test is stuck
+   anyway).  */
+extern void (*jt_deadlock_hook) (void);
 void jt_set_keeps_page (int keeps);
 
 /* env/fpager.c, a file pager for nodes, where it is linked in.  Write
@@ -167,6 +173,8 @@ void jt_drain (void);
 /* Record WHAT happened to block B for the trace printed on a stale
    page-in; DATA, if not NULL, is an image of the block.  */
 void jt_trace (block_t b, const char *what, const void *data);
+/* Print the trace's events of block B, oldest first.  */
+void jt_trace_dump (block_t b);
 
 /* Number of page-ins that failed, as libpager fails the page-in of a
    page whose eviction write failed.  */

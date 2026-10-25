@@ -148,6 +148,13 @@ $(INODE_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
 # (env/fpager.c), and libdiskfs's directory operations around dir.c.
 DIR_LIBDISKFS = dir-rename dir-renamed lookup direnter dirremove dirrewrite \
 		name-cache dir-init dir-clear
+# A patched copy can stand in for the tree's.
+DIR_RENAMED_C ?= $(HURD)/libdiskfs/dir-renamed.c
+$(B)/ld-dir-renamed.o: $(DIR_RENAMED_C) | $(B)
+	$(CC) $(CPPFLAGS) -I$(HURD)/libdiskfs $(CFLAGS) -c -o $@ $<
+DIRENTER_C ?= $(HURD)/libdiskfs/direnter.c
+$(B)/ld-direnter.o: $(DIRENTER_C) | $(B)
+	$(CC) $(CPPFLAGS) -I$(HURD)/libdiskfs $(CFLAGS) -c -o $@ $<
 DIR_LIBDISKFS_OBJS = $(patsubst %,$(B)/ld-%.o,$(DIR_LIBDISKFS)) \
 		     $(B)/dirglue.o $(B)/murmur3.o
 $(B)/dirglue.o: env/dirglue.c env/jtest.h | $(B)
@@ -157,6 +164,12 @@ $(B)/murmur3.o: $(HURD)/libihash/murmur3.c | $(B)
 DIR_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_fdir*.c))
 $(B)/fpager.o: env/fpager.c env/jtest.h | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+$(B)/btrace.o: env/btrace.c env/jtest.h | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+BTRACE_WRAPS = -Wl,--wrap=ext2_new_block -Wl,--wrap=ext2_free_blocks \
+	       -Wl,--wrap=journal_get_write_access_external \
+	       -Wl,--wrap=journal_mark_dirty_external \
+	       -Wl,--wrap=journal_release_access -Wl,--wrap=diskfs_truncate
 
 DIR_C ?= $(HURD)/ext2fs/dir.c
 # shim/dir: the Hurd's struct dirent, for dir.c only.
@@ -165,10 +178,11 @@ $(B)/dir.o: $(DIR_C) shim/dir/dirent.h | $(B)
 
 $(B)/t_fdir_mt: tests/t_fdir_ops.c
 $(DIR_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
-	      $(INODE_OBJS) $(B)/fpager.o $(B)/dir.o $(DIR_LIBDISKFS_OBJS)
+	      $(INODE_OBJS) $(B)/fpager.o $(B)/dir.o $(DIR_LIBDISKFS_OBJS) \
+	      $(B)/btrace.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(INODE_OBJS) \
-	  $(B)/fpager.o $(B)/dir.o $(DIR_LIBDISKFS_OBJS) $(LDFLAGS) \
-	  -Wl,--no-warn-execstack \
+	  $(B)/fpager.o $(B)/dir.o $(DIR_LIBDISKFS_OBJS) $(B)/btrace.o \
+	  $(LDFLAGS) -Wl,--no-warn-execstack $(BTRACE_WRAPS) \
 	  -Wl,--wrap=diskfs_set_node_times -Wl,--wrap=diskfs_make_node_alloc \
 	  -Wl,--wrap=diskfs_node_norefs -Wl,--wrap=munmap -Wl,--wrap=mmap
 

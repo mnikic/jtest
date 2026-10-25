@@ -544,6 +544,7 @@ static struct
   block_t b;
   char what[40];
   long v0, v1;
+  uint32_t hash;
 } trace_ring[TRACE_LEN];
 static unsigned long trace_next;
 static pthread_mutex_t trace_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -561,15 +562,32 @@ half_version (const void *data, block_t b, int half)
 void
 jt_trace (block_t b, const char *what, const void *data)
 {
+  /* DATA can be a mapping whose read faults, which needs a pager thread
+     that can be tracing: read it before taking the lock.  */
+  uint32_t h = 2166136261u;
+  if (data)
+    for (size_t i = 0; i < block_size; i++)
+      h = (h ^ ((const unsigned char *) data)[i]) * 16777619u;
+  long v0 = data ? half_version (data, b, 0) : -2;
+  long v1 = data ? half_version (data, b, 1) : -2;
   pthread_mutex_lock (&trace_lock);
   unsigned long n = trace_next++;
   trace_ring[n % TRACE_LEN].n = n + 1;
   trace_ring[n % TRACE_LEN].b = b;
   snprintf (trace_ring[n % TRACE_LEN].what, sizeof trace_ring[0].what,
 	    "%s", what);
-  trace_ring[n % TRACE_LEN].v0 = data ? half_version (data, b, 0) : -2;
-  trace_ring[n % TRACE_LEN].v1 = data ? half_version (data, b, 1) : -2;
+  trace_ring[n % TRACE_LEN].v0 = v0;
+  trace_ring[n % TRACE_LEN].v1 = v1;
+  trace_ring[n % TRACE_LEN].hash = data ? h : 0;
   pthread_mutex_unlock (&trace_lock);
+}
+
+static void trace_dump (block_t b);
+
+void
+jt_trace_dump (block_t b)
+{
+  trace_dump (b);
 }
 
 static void
@@ -585,9 +603,10 @@ trace_dump (block_t b)
 	if (trace_ring[n % TRACE_LEN].v0 == -2)
 	  fprintf (stderr, "  %8lu  %s\n", n, trace_ring[n % TRACE_LEN].what);
 	else
-	  fprintf (stderr, "  %8lu  %-30s v%ld/v%ld\n", n,
+	  fprintf (stderr, "  %8lu  %-38s v%ld/v%ld #%08x\n", n,
 		   trace_ring[n % TRACE_LEN].what,
-		   trace_ring[n % TRACE_LEN].v0, trace_ring[n % TRACE_LEN].v1);
+		   trace_ring[n % TRACE_LEN].v0, trace_ring[n % TRACE_LEN].v1,
+		   trace_ring[n % TRACE_LEN].hash);
       }
   pthread_mutex_unlock (&trace_lock);
 }
@@ -677,6 +696,7 @@ jt_set_keeps_page (int keeps)
 /* Set by env/fpager.c where it is linked in.  */
 int (*jt_fault_hook) (void *addr, void *uctx);
 void (*jt_umount_hook) (void);
+void (*jt_norefs_hook) (struct node *np);
 static __thread int on_pager_thread;
 
 int
@@ -1739,6 +1759,8 @@ load_image (const char *path)
 /* From the mount to the unmount, a deadlock ends the test after
    JT_WATCHDOG seconds (default 300) instead of hanging it.  A test can
    set its own SIGALRM handler and alarm after jt_mount.  */
+void (*jt_deadlock_hook) (void);
+
 static void
 watchdog (int sig)
 {
@@ -1747,6 +1769,8 @@ watchdog (int sig)
   (void) sig;
   if (write (2, msg, sizeof msg - 1) < 0)
     _exit (3);
+  if (jt_deadlock_hook)
+    jt_deadlock_hook ();
   /* With JT_WATCHDOG_GDB, every thread's backtrace first.  Not
      async-signal-safe, but the process is stuck anyway.  */
   if (getenv ("JT_WATCHDOG_GDB"))

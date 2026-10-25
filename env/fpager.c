@@ -57,6 +57,9 @@ struct fpager
   unsigned char snap_valid[FP_PAGES];
   char *snap;			/* What the last eviction wrote.  */
   struct fmap *maps;
+  int queued;			/* Page-outs asked for, not yet done.  */
+  int dir;			/* NP is a directory: diskfs_drop_node
+				   clears its mode while pages go out.  */
 };
 
 static struct fpager *fpagers[FP_MAX];
@@ -180,6 +183,11 @@ fp_pagein (void *arg)
 	memcpy (own_page (fp, page), buf, block_size);
       else
 	memset (own_page (fp, page), 0, block_size);
+      char what[40];
+      snprintf (what, sizeof what, "fp in ino %llu pg %zu",
+		(unsigned long long) np->cache_id, page);
+      if (blk)
+	jt_trace (blk, what, own_page (fp, page));
       if (fp->snap_valid[page]
 	  && memcmp (own_page (fp, page), fp->snap + off, block_size))
 	{
@@ -187,6 +195,11 @@ fp_pagein (void *arg)
 	  ext2_warning ("jtest: STALE file page-in of inode %llu page %zu "
 			"(block %u)", (unsigned long long) np->cache_id, page,
 			blk);
+	  if (blk)
+	    {
+	      jt_trace (blk, "  (evicted bytes were)", fp->snap + off);
+	      jt_trace_dump (blk);
+	    }
 	}
       fp->snap_valid[page] = 0;
       fp->resident[page] = 1;
@@ -244,8 +257,33 @@ fp_unlock (void *arg)
    the page leaves every mapping before it is copied, as Mach takes it
    away; otherwise it stays, clean.  A page-in meanwhile waits, and gets
    what was written (PM_PAGEINWAIT).  */
+static void fp_pageout_1 (void *arg);
+
 static void
 fp_pageout (void *arg)
+{
+  struct fpager *fp = ((struct fp_req *) arg)->fp;
+  fp_pageout_1 (arg);
+  pthread_mutex_lock (&fp_lock);
+  fp->queued--;
+  pthread_cond_broadcast (&fp_cond);
+  pthread_mutex_unlock (&fp_lock);
+}
+
+/* Queue a page-out of FP; FP_LOCK held.  */
+static struct fp_req *
+pageout_req (struct fpager *fp, size_t page, int evict)
+{
+  struct fp_req *r = calloc (1, sizeof *r);
+  r->fp = fp;
+  r->page = page;
+  r->evict = evict;
+  fp->queued++;
+  return r;
+}
+
+static void
+fp_pageout_1 (void *arg)
 {
   struct fp_req *r = arg;
   struct fpager *fp = r->fp;
@@ -257,7 +295,7 @@ fp_pageout (void *arg)
 
   /* With a journal a directory's blocks are journaled: ext2fs syncs no
      directory's pager while it runs, and Mach's own page-outs evict.  */
-  if (ext2_journal && S_ISDIR (np->dn_stat.st_mode))
+  if (ext2_journal && fp->dir)
     evict = 1;
 
   pthread_mutex_lock (&fp_lock);
@@ -301,6 +339,11 @@ fp_pageout (void *arg)
       assert_backtrace (err || blk);
       if (!err)
 	{
+	  char what[40];
+	  snprintf (what, sizeof what, "fp out ino %llu pg %zu%s",
+		    (unsigned long long) np->cache_id, page,
+		    evict ? " evict" : "");
+	  jt_trace (blk, what, buf);
 	  jt_set_keeps_page (!evict);
 	  err = journal_store_write (blk, block_size, buf, &amount, 0);
 	  jt_set_keeps_page (0);
@@ -427,6 +470,39 @@ fp_fault_hook (void *addr, void *uctx)
 /* ---------------------------------------------------------------- */
 /* What ext2fs and libdiskfs call.  */
 
+/* NP is being freed.  ext2fs's pager holds a light reference on its node
+   until it is gone, so by now every mapping is gone, and so are its pages
+   (written back by a sync or the journal, or discarded by truncate):
+   there is nothing to write.  Wait for page-outs in flight, and detach
+   the pager from NP.  */
+static void
+fp_node_freed (struct node *np)
+{
+  pthread_mutex_lock (&fp_lock);
+  for (int i = 0; i < nfpagers; i++)
+    if (fpagers[i]->np == np)
+      {
+	struct fpager *fp = fpagers[i];
+	for (;;)
+	  {
+	    int busy = fp->queued;
+	    for (size_t pg = 0; pg < FP_PAGES && !busy; pg++)
+	      busy = fp->paging_in[pg] || fp->paging_out[pg];
+	    if (!busy)
+	      break;
+	    pthread_cond_wait (&fp_cond, &fp_lock);
+	  }
+	FP_CHECK (!fp->maps, "inode %llu freed while mapped",
+		  (unsigned long long) np->cache_id);
+	fp->np = NULL;
+	FP_CHECK (!ftruncate (fp->fd, 0)
+		  && !ftruncate (fp->fd, (off_t) FP_PAGES * block_size),
+		  "memfd");
+	break;
+      }
+  pthread_mutex_unlock (&fp_lock);
+}
+
 static struct fpager *
 fpager_of (struct node *np, int create)
 {
@@ -435,9 +511,26 @@ fpager_of (struct node *np, int create)
       return fpagers[i];
   if (!create)
     return NULL;
+  /* The pager of a node that was freed is gone: a new node, which can
+     have the old one's address, gets a pager of its own.  */
+  for (int i = 0; i < nfpagers; i++)
+    if (!fpagers[i]->np)
+      {
+	struct fpager *fp = fpagers[i];
+	int fd = fp->fd;
+	char *own = fp->own, *snap = fp->snap;
+	memset (fp, 0, sizeof *fp);
+	fp->np = np;
+	fp->dir = S_ISDIR (np->dn_stat.st_mode);
+	fp->fd = fd;
+	fp->own = own;
+	fp->snap = snap;
+	return fp;
+      }
   FP_CHECK (nfpagers < FP_MAX, "too many file pagers");
   struct fpager *fp = calloc (1, sizeof *fp);
   fp->np = np;
+  fp->dir = S_ISDIR (np->dn_stat.st_mode);
   fp->fd = memfd_create ("jtest file pager", 0);
   FP_CHECK (fp->fd >= 0 && !ftruncate (fp->fd, (off_t) FP_PAGES * block_size),
 	 "memfd");
@@ -449,6 +542,7 @@ fpager_of (struct node *np, int create)
     {
       jt_fault_hook = fp_fault_hook;
       jt_umount_hook = jt_fp_sync_all;
+      jt_norefs_hook = fp_node_freed;
     }
   fpagers[nfpagers++] = fp;
   return fp;
@@ -499,6 +593,34 @@ vm_map (task_t t, vm_address_t *a, vm_size_t s, vm_address_t mask,
   pthread_mutex_unlock (&fp_lock);
   *a = (vm_address_t) p;
   return 0;
+}
+
+/* ext2fs's truncate, with a real pager, flushes the pages past the new
+   size before it frees their blocks (force_delayed_copies): they are
+   dropped, dirty or not, after any write of them in flight (linked with
+   --wrap=diskfs_truncate).  */
+error_t __real_diskfs_truncate (struct node *np, off_t length);
+
+error_t
+__wrap_diskfs_truncate (struct node *np, off_t length)
+{
+  pthread_mutex_lock (&fp_lock);
+  struct fpager *fp = fpager_of (np, 0);
+  if (fp)
+    for (size_t pg = (length + block_size - 1) >> log2_block_size;
+	 pg < FP_PAGES; pg++)
+      {
+	while (fp->paging_out[pg] || fp->paging_in[pg])
+	  pthread_cond_wait (&fp_cond, &fp_lock);
+	if (fp->resident[pg])
+	  memset (own_page (fp, pg), 0, block_size);
+	fp->resident[pg] = 0;
+	fp->dirty[pg] = 0;
+	fp->snap_valid[pg] = 0;
+	apply_prot (fp, pg);
+      }
+  pthread_mutex_unlock (&fp_lock);
+  return __real_diskfs_truncate (np, length);
 }
 
 /* dir.c unmaps with munmap (linked with --wrap=munmap).  */
@@ -607,13 +729,11 @@ jt_fp_pageout (struct node *np, size_t page, int evict, int wait)
 {
   pthread_mutex_lock (&fp_lock);
   struct fpager *fp = fpager_of (np, 0);
+  struct fp_req *r = fp && page < FP_PAGES ? pageout_req (fp, page, evict)
+    : NULL;
   pthread_mutex_unlock (&fp_lock);
-  if (!fp || page >= FP_PAGES)
+  if (!r)
     return;
-  struct fp_req *r = calloc (1, sizeof *r);
-  r->fp = fp;
-  r->page = page;
-  r->evict = evict;
   if (wait)
     jt_pager_call (fp_pageout, r);
   else
@@ -628,15 +748,13 @@ jt_fp_sync_all (void)
     for (size_t pg = 0; pg < FP_PAGES; pg++)
       {
 	pthread_mutex_lock (&fp_lock);
-	int d = fpagers[i]->dirty[pg] || fpagers[i]->paging_out[pg];
+	struct fp_req *r = NULL;
+	if (fpagers[i]->np
+	    && (fpagers[i]->dirty[pg] || fpagers[i]->paging_out[pg]))
+	  r = pageout_req (fpagers[i], pg, 0);
 	pthread_mutex_unlock (&fp_lock);
-	if (d)
-	  {
-	    struct fp_req *r = calloc (1, sizeof *r);
-	    r->fp = fpagers[i];
-	    r->page = pg;
-	    jt_pager_call (fp_pageout, r);
-	  }
+	if (r)
+	  jt_pager_call (fp_pageout, r);
       }
 }
 

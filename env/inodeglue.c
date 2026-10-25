@@ -236,6 +236,8 @@ void __real_diskfs_node_norefs (struct node *np);
 __attribute__ ((weak)) void
 __wrap_diskfs_node_norefs (struct node *np)
 {
+  if (jt_norefs_hook)
+    jt_norefs_hook (np);
   __real_diskfs_node_norefs (np);
 }
 
