@@ -336,6 +336,79 @@ MUTANTS = [
     {""",
             "t_fdir",
             why="a page-out of an uncommitted directory block goes home"),
+    # The real dir.c (t_fdir_ops).
+    Mutant ("dirblock-unjournaled", "ext2fs/dir.c",
+            """  txn = journal_thread_transaction ();
+  err = journal_mark_dirty_external (txn, blk, (const void *) data);""",
+            """  txn = journal_thread_transaction ();
+  err = 0;
+  journal_release_access (txn, blk);""",
+            "t_fdir_ops",
+            why="a directory block's edit is not handed to the journal"),
+    Mutant ("dirremove-mark-early", "ext2fs/dir.c",
+            """  if (ds->preventry == 0)
+    ds->entry->inode = htole32 (0);
+  else
+    {
+      assert_backtrace ((vm_address_t) ds->entry - (vm_address_t) ds->preventry
+			== le16toh (ds->preventry->rec_len));
+      ds->preventry->rec_len = htole16( le16toh (ds->preventry->rec_len) + ds->entry->rec_len);
+    }
+
+  dp->dn_set_mtime = 1;
+  diskfs_node_disknode (dp)->info.i_flags &= ~EXT2_BTREE_FL;
+
+  err = dirblock_mark_dirty (blk, ds->mapbuf + ds->idx * DIRBLKSIZ);
+  munmap ((caddr_t) ds->mapbuf, ds->mapextent);
+  if (err)
+    return err;
+
+  /* If we are keeping count of this block, then keep the count up
+     to date. */
+  if (diskfs_node_disknode (dp)->dirents
+      && diskfs_node_disknode (dp)->dirents[ds->idx] != -1)
+    diskfs_node_disknode (dp)->dirents[ds->idx]--;""",
+            """  err = dirblock_mark_dirty (blk, ds->mapbuf + ds->idx * DIRBLKSIZ);
+  if (ds->preventry == 0)
+    ds->entry->inode = htole32 (0);
+  else
+    {
+      assert_backtrace ((vm_address_t) ds->entry - (vm_address_t) ds->preventry
+			== le16toh (ds->preventry->rec_len));
+      ds->preventry->rec_len = htole16( le16toh (ds->preventry->rec_len) + ds->entry->rec_len);
+    }
+
+  dp->dn_set_mtime = 1;
+  diskfs_node_disknode (dp)->info.i_flags &= ~EXT2_BTREE_FL;
+
+  munmap ((caddr_t) ds->mapbuf, ds->mapextent);
+  if (err)
+    return err;
+
+  /* If we are keeping count of this block, then keep the count up
+     to date. */
+  if (diskfs_node_disknode (dp)->dirents
+      && diskfs_node_disknode (dp)->dirents[ds->idx] != -1)
+    diskfs_node_disknode (dp)->dirents[ds->idx]--;""",
+            "t_fdir_ops",
+            why="a removal's block goes to the journal before the entry is gone"),
+    Mutant ("extend-unreserved", "ext2fs/dir.c",
+            """      err = dirblock_get_write_access (dp, ds->idx, 1, &blk);
+      if (err)
+	{
+	  munmap ((caddr_t) ds->mapbuf, ds->mapextent);
+	  return err;
+	}""",
+            """      pthread_rwlock_wrlock (&diskfs_node_disknode (dp)->alloc_lock);
+      err = ext2_getblk (dp, ds->idx, 1, &blk);
+      pthread_rwlock_unlock (&diskfs_node_disknode (dp)->alloc_lock);
+      if (err)
+	{
+	  munmap ((caddr_t) ds->mapbuf, ds->mapextent);
+	  return err;
+	}""",
+            "t_fdir_ops",
+            why="EXTEND writes its new block without reserving it"),
 ]
 
 

@@ -150,12 +150,17 @@ DIR_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_fdir*.c))
 $(B)/fpager.o: env/fpager.c env/jtest.h | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
+DIR_C ?= $(HURD)/ext2fs/dir.c
+# shim/dir: the Hurd's struct dirent, for dir.c only.
+$(B)/dir.o: $(DIR_C) shim/dir/dirent.h | $(B)
+	$(CC) -Ishim/dir $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
 $(DIR_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
-	      $(INODE_OBJS) $(B)/fpager.o
+	      $(INODE_OBJS) $(B)/fpager.o $(B)/dir.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(INODE_OBJS) \
-	  $(B)/fpager.o $(LDFLAGS) -Wl,--no-warn-execstack \
+	  $(B)/fpager.o $(B)/dir.o $(LDFLAGS) -Wl,--no-warn-execstack \
 	  -Wl,--wrap=diskfs_set_node_times -Wl,--wrap=diskfs_make_node_alloc \
-	  -Wl,--wrap=diskfs_node_norefs -Wl,--wrap=munmap
+	  -Wl,--wrap=diskfs_node_norefs -Wl,--wrap=munmap -Wl,--wrap=mmap
 
 $(EXT2_TESTS): $(B)/t_trunc%: tests/t_trunc%.c tests/common.h $(ENV) \
 	       $(EXT2_OBJS)

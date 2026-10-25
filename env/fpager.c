@@ -261,7 +261,10 @@ fp_pageout (void *arg)
     evict = 1;
 
   pthread_mutex_lock (&fp_lock);
-  while (fp->paging_out[page] || fp->paging_in[page])
+  /* Writes of a page are serialized (libpager).  A page being paged in is
+     not resident: there is nothing to write, and waiting for the page-in
+     here could take the pager thread it needs.  */
+  while (fp->paging_out[page])
     pthread_cond_wait (&fp_cond, &fp_lock);
   if (!fp->resident[page] || !fp->dirty[page])
     {
@@ -635,4 +638,21 @@ jt_fp_sync_all (void)
 	    jt_pager_call (fp_pageout, r);
 	  }
       }
+}
+
+/* dir.c allocates with mmap (0, ..., MAP_ANON, 0, 0), which the Hurd
+   takes as a private mapping, and Linux refuses without MAP_PRIVATE
+   (linked with --wrap=mmap).  */
+void *__real_mmap (void *addr, size_t len, int prot, int flags, int fd,
+		   off_t off);
+
+void *
+__wrap_mmap (void *addr, size_t len, int prot, int flags, int fd, off_t off)
+{
+  if ((flags & MAP_ANONYMOUS) && !(flags & (MAP_PRIVATE | MAP_SHARED)))
+    {
+      flags |= MAP_PRIVATE;
+      fd = -1;
+    }
+  return __real_mmap (addr, len, prot, flags, fd, off);
 }

@@ -141,17 +141,18 @@ iohelp_initialize_conch (struct conch *c, pthread_mutex_t *lock)
 static void __attribute__ ((noreturn))
 no_dirs (const char *what)
 {
-  _ext2_panic (what, "no directories in the harness");
+  _ext2_panic (what, "no directories in the harness (the t_fdir* tests "
+	       "link the real dir.c)");
 }
 
-error_t
+__attribute__ ((weak)) error_t
 diskfs_init_dir (struct node *np, struct node *parent, struct protid *cred)
 {
   (void) np; (void) parent; (void) cred;
   no_dirs (__func__);
 }
 
-error_t
+__attribute__ ((weak)) error_t
 diskfs_clear_directory (struct node *np, struct node *parent,
 			struct protid *cred)
 {
@@ -159,7 +160,7 @@ diskfs_clear_directory (struct node *np, struct node *parent,
   no_dirs (__func__);
 }
 
-error_t
+__attribute__ ((weak)) error_t
 diskfs_direnter (struct node *dp, const char *name, struct node *np,
 		 struct dirstat *ds, struct protid *cred)
 {
@@ -167,7 +168,7 @@ diskfs_direnter (struct node *dp, const char *name, struct node *np,
   no_dirs (__func__);
 }
 
-error_t
+__attribute__ ((weak)) error_t
 diskfs_drop_dirstat (struct node *dp, struct dirstat *ds)
 {
   (void) dp; (void) ds;
