@@ -23,6 +23,15 @@ typedef char string_t[1024];
 typedef struct stat io_statbuf_t;
 typedef struct statfs fsys_statfsbuf_t;
 
+/* The Hurd's open modes, which libdiskfs keeps in a peropen's openstat;
+   Linux's <fcntl.h> has no O_READ or O_WRITE.  */
+#ifndef O_READ
+#define O_READ 0x0001
+#endif
+#ifndef O_WRITE
+#define O_WRITE 0x0002
+#endif
+
 typedef enum retry_type
 {
   FS_RETRY_NORMAL = 1,

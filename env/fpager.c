@@ -699,6 +699,70 @@ diskfs_node_rdwr (struct node *np, char *data, loff_t off,
   return err;
 }
 
+/* libpager's pager_memcpy, for libdiskfs's _diskfs_rdwr_internal: copy
+   *SIZE bytes between OTHER and MEMOBJ at OFFSET (into MEMOBJ with
+   VM_PROT_WRITE in PROT), through a mapping.  A fault ends the copy: it
+   returns the fault's error (a failed page-in or unlock, ENOSPC say),
+   with *SIZE set to what was copied before it.  Each page's fault is
+   taken first, by hand, so that an error comes back without a longjmp
+   out of the SIGSEGV handler, which ThreadSanitizer cannot follow; one
+   evicted again before its copy faults the usual way.  */
+error_t
+pager_memcpy (struct pager *pager, memory_object_t memobj,
+	      vm_offset_t offset, void *other, size_t *size, vm_prot_t prot)
+{
+  (void) pager;
+  struct fpager *fp = fp_of_port (memobj);
+  FP_CHECK (fp, "pager_memcpy of an object that is not a file pager's");
+  int dir = (prot & VM_PROT_WRITE) != 0;
+  size_t n = *size;
+  if (n == 0)
+    return 0;
+
+  vm_offset_t start = offset & ~((vm_offset_t) block_size - 1);
+  vm_size_t len = ((offset + n + block_size - 1)
+		   & ~((vm_offset_t) block_size - 1)) - start;
+  vm_address_t map;
+  error_t err = vm_map (mach_task_self (), &map, len, 0, 1, memobj, start, 0,
+			prot, VM_PROT_READ | VM_PROT_WRITE, 0);
+  if (err)
+    return err;
+  volatile size_t done = 0;
+  err = diskfs_catch_exception ();
+  if (!err)
+    {
+      /* A page at a time, so that DONE is right after a fault.  */
+      while (done < n)
+	{
+	  vm_offset_t at = offset + done;
+	  size_t chunk = block_size - (at & (block_size - 1));
+	  if (chunk > n - done)
+	    chunk = n - done;
+	  char *mem = (char *) map + (at - start);
+	  err = fault (fp, at >> log2_block_size, dir);
+	  if (err)
+	    break;
+	  if (dir)
+	    memcpy (mem, (char *) other + done, chunk);
+	  else
+	    memcpy ((char *) other + done, mem, chunk);
+	  done += chunk;
+	}
+      diskfs_end_catch_exception ();
+    }
+  __wrap_munmap ((void *) map, len);
+  if (err)
+    *size = done;
+  return err;
+}
+
+struct pager *
+diskfs_get_filemap_pager_struct (struct node *np)
+{
+  (void) np;
+  return NULL;
+}
+
 /* ext2fs's diskfs_grow (pager.c): allocsize grows to whole blocks, and
    only blocks of a page made writable already are allocated now; the
    others are allocated by pager_unlock_page, or by dir.c for an

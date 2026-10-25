@@ -24,7 +24,7 @@ def tests ():
 
 def image_for (test):
     """As make check picks it."""
-    if test.startswith (("t_balloc_full", "t_balloc_lock")):
+    if test.startswith (("t_balloc_full", "t_balloc_lock", "t_fwrite_enospc")):
         return "full.img"
     for p in ("t_balloc", "t_trunc", "t_orphan", "t_rwcycle", "t_abortfiles",
               "t_nodecache", "t_fdir"):

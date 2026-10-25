@@ -1563,6 +1563,14 @@ ext2_release_busy_blocks (block_t block, unsigned long count)
     release_hook (block, count);
 }
 
+/* Weak: balloc.c's, where it is linked in; without it, no block is
+   busy.  */
+__attribute__ ((weak)) unsigned long
+ext2_busy_blocks (void)
+{
+  return 0;
+}
+
 static struct node *jnode;
 static int jnode_refs;
 

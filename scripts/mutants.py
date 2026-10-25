@@ -344,6 +344,24 @@ MUTANTS = [
     {""",
             "t_fdir",
             why="a page-out of an uncommitted directory block goes home"),
+    # io_write on a full disk (t_fwrite_enospc).
+    Mutant ("enospc-no-retry", J,
+            """  if (*retries >= 3 || ext2_busy_blocks () == 0)
+    return 0;""",
+            """  if (1)
+    return 0;""",
+            "t_fwrite_enospc",
+            why="a write whose only free blocks are its transaction's frees "
+            "fails with ENOSPC"),
+    Mutant ("io-write-retry-reoffset", "libdiskfs/io-write.c",
+            """  if (off == -1)
+    {
+      if (cred->po->openstat & O_APPEND)""",
+            """  if (offset == -1)
+    {
+      if (cred->po->openstat & O_APPEND)""",
+            "t_fwrite_enospc",
+            why="a retried append goes past the end its first try made"),
     # libdiskfs's renames and entries (t_fdir_renlock, t_fdir_ren,
     # t_fdir_dead).
     Mutant ("rename-bottom-up", "libdiskfs/dir-renamed.c",
@@ -482,7 +500,7 @@ def run_mutant (m, a, jobs):
     make = ["make", "-s", "-C", common.JTEST, "B=" + build,
             "HURD=" + os.path.join (base, "hurd"), os.path.join (build, m.test),
             os.path.join (build, "base.img"), os.path.join (build, "balloc.img"),
-            os.path.join (build, "big.img")]
+            os.path.join (build, "big.img"), os.path.join (build, "full.img")]
     if m.san:
         make.append ("SAN=" + m.san)
     if subprocess.run (make, stdout=subprocess.DEVNULL,

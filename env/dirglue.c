@@ -10,6 +10,20 @@ int diskfs_name_max = EXT2_NAME_LEN;
 /* libdiskfs's; the tests set it to the root.  */
 struct node *diskfs_root_node;
 
+/* No file change notifications, and no conch: a node's lock is all.  */
+void
+diskfs_notice_filechange (struct node *np, enum file_changed_type type,
+			  off_t start, off_t end)
+{
+  (void) np; (void) type; (void) start; (void) end;
+}
+
+void
+iohelp_get_conch (struct conch *c)
+{
+  (void) c;
+}
+
 /* No one watches directories in the harness.  */
 void
 diskfs_notice_dirchange (struct node *dp, enum dir_changed_type type,
