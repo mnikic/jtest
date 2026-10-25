@@ -36,7 +36,15 @@
    still in use.  With JT_ZERO_STAT=1, A's node's dn_stat is zeroed, as
    fresh memory is.
 
-   The scenario is the third argument; by default both run, each in a
+   readerr: a lookup whose read of the inode fails.  The node is in the
+   cache by then, with the cache's light reference; the error path takes
+   it out of the cache and releases the lookup's reference.  The page-in
+   of the inode's block fails as on the Hurd (jt_ref_fail_hook):
+   1. A lookup of inode 13 gets EIO.
+   2. The node it made must be freed (diskfs_node_norefs is wrapped).
+   3. A lookup of inode 13 reads it again, and finds it.
+
+   The scenario is the third argument; by default all run, each in a
    process of its own.  */
 
 #include <sys/wait.h>
@@ -53,6 +61,28 @@ static ino_t lost_ino = 13;
 static int mk_armed, a_made, b_done, a_done;
 static error_t a_err;
 
+/* readerr.  */
+static int record_made;
+static struct node *made, *watched;
+static block_t fail_blk;
+static unsigned long watched_freed;
+
+void __real_diskfs_node_norefs (struct node *np);
+
+void
+__wrap_diskfs_node_norefs (struct node *np)
+{
+  if (np == watched)
+    __atomic_add_fetch (&watched_freed, 1, __ATOMIC_RELAXED);
+  __real_diskfs_node_norefs (np);
+}
+
+static int
+fail_inode_block (block_t b)
+{
+  return b == fail_blk ? EIO : 0;
+}
+
 struct node *__real_diskfs_make_node_alloc (size_t size);
 
 /* ext2fs's diskfs_user_make_node allocates the node with this, after the
@@ -61,6 +91,11 @@ struct node *
 __wrap_diskfs_make_node_alloc (size_t size)
 {
   struct node *np = __real_diskfs_make_node_alloc (size);
+  if (np && record_made)
+    {
+      made = np;
+      watched = np;
+    }
   if (np && __atomic_exchange_n (&mk_armed, 0, __ATOMIC_ACQ_REL))
     {
       if (getenv ("JT_ZERO_STAT"))
@@ -182,6 +217,46 @@ lostrace (void)
 }
 
 static int
+readerr (void)
+{
+  struct node *np;
+  ino_t ino = 13;
+
+  /* 1.  */
+  fail_blk = dino_block (ino);
+  record_made = 1;
+  JT_SET_HOOK (jt_ref_fail_hook, fail_inode_block);
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  error_t err = diskfs_cached_lookup (ino, &np);
+  diskfs_journal_stop_transaction (txn);
+  JT_SET_HOOK (jt_ref_fail_hook, NULL);
+  record_made = 0;
+  CHECK (err == EIO, "the lookup with the failed read: %s", strerror (err));
+  CHECK (made, "no node was made");
+
+  /* 2.  */
+  unsigned long freed = __atomic_load_n (&watched_freed, __ATOMIC_ACQUIRE);
+  struct references r = { 0, 0 };
+  if (!freed)
+    /* Not freed, so still there to look at.  */
+    refcounts_references (&made->refcounts, &r);
+
+  /* 3.  */
+  txn = diskfs_journal_start_transaction ();
+  CHECK (!diskfs_cached_lookup (ino, &np), "the lookup after the failure");
+  diskfs_nput (np);
+  diskfs_journal_stop_transaction (txn);
+
+  unsigned long warnings = jt_umount ();
+  CHECK (freed, "the node whose read failed was never freed: %u hard and "
+	 "%u weak references left, and the cache does not have it",
+	 (unsigned) r.hard, (unsigned) r.weak);
+  printf ("t_nodecache: OK (readerr: the node was freed; %lu warnings)\n",
+	  warnings);
+  return 0;
+}
+
+static int
 lastref (void)
 {
   struct node *np;
@@ -229,7 +304,13 @@ int
 main (int argc, char **argv)
 {
   const char *image = argc > 1 ? argv[1] : "build/balloc.img";
-  static const char *const all[] = { "lastref", "lostrace", NULL };
+  /* TSan does not follow the longjmp of a failed page-in (its interceptor
+     asserts), so readerr is left out under it.  */
+  static const char *const all[] = { "lastref", "lostrace",
+#ifndef __SANITIZE_THREAD__
+				     "readerr",
+#endif
+				     NULL };
   const char *one[] = { argc > 3 ? argv[3] : NULL, NULL };
   const char *const *modes = argc > 3 ? one : all;
   int status, failed = 0;
@@ -244,7 +325,8 @@ main (int argc, char **argv)
 	  jt_mount (image, 2, 0);
 	  jt_inode_globals ();
 	  files_init ();
-	  exit (!strcmp (*modes, "lastref") ? lastref () : lostrace ());
+	  exit (!strcmp (*modes, "lastref") ? lastref ()
+		: !strcmp (*modes, "lostrace") ? lostrace () : readerr ());
 	}
       CHECK (waitpid (pid, &status, 0) == pid, "wait");
       if (!WIFEXITED (status) || WEXITSTATUS (status))

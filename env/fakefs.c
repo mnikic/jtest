@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1368,9 +1369,26 @@ disk_cache_block_ref_mapped (block_t block)
   return eslot (block);
 }
 
+/* A page-in of the disk cache that fails, as the Hurd reports it to a
+   thread that faults on the page inside diskfs_catch_exception: the
+   signal preemptor longjmps back with the error.  Outside of one, the
+   hook's error is not reported.  */
+int (*jt_ref_fail_hook) (block_t b);
+/* ext2glue.c's, in the tests that link it.  */
+extern __thread struct disk_image_user *diskfs_exception_diu
+  __attribute__ ((weak));
+
 void *
 disk_cache_block_ref (block_t block)
 {
+  int (*fail) (block_t) = __atomic_load_n (&jt_ref_fail_hook,
+					   __ATOMIC_ACQUIRE);
+  if (fail && &diskfs_exception_diu && diskfs_exception_diu)
+    {
+      int err = fail (block);
+      if (err)
+	longjmp (diskfs_exception_diu->env, err);
+    }
   pthread_mutex_lock (&page_lock);
   fault_locked (&dcache, block);
   ref_block (block);

@@ -300,6 +300,14 @@ MUTANTS = [
       np = tmp;""",
             "t_nodecache", ["lostrace"],
             why="the losing lookup drops its unread node as one without links"),
+    Mutant ("nodecache-readerr-leak", "libdiskfs/node-cache.c",
+            """    diskfs_nrele_light (np);
+
+    forget_unread_node (np);""",
+            """
+    forget_unread_node (np);""",
+            "t_nodecache", ["readerr"],
+            why="a node whose read failed keeps the cache's reference"),
 ]
 
 

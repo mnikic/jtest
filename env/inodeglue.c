@@ -229,6 +229,15 @@ __wrap_diskfs_set_node_times (struct node *np)
   __real_diskfs_set_node_times (np);
 }
 
+/* And --wrap=diskfs_node_norefs, so that a test sees nodes freed.  */
+void __real_diskfs_node_norefs (struct node *np);
+
+__attribute__ ((weak)) void
+__wrap_diskfs_node_norefs (struct node *np)
+{
+  __real_diskfs_node_norefs (np);
+}
+
 struct node *__real_diskfs_make_node_alloc (size_t size);
 
 __attribute__ ((weak)) struct node *

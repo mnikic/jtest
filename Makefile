@@ -142,7 +142,7 @@ $(INODE_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
 		$(INODE_OBJS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(INODE_OBJS) $(LDFLAGS) \
 	  -Wl,--no-warn-execstack -Wl,--wrap=diskfs_set_node_times \
-	  -Wl,--wrap=diskfs_make_node_alloc
+	  -Wl,--wrap=diskfs_make_node_alloc -Wl,--wrap=diskfs_node_norefs
 
 $(EXT2_TESTS): $(B)/t_trunc%: tests/t_trunc%.c tests/common.h $(ENV) \
 	       $(EXT2_OBJS)

@@ -70,6 +70,11 @@ extern const char *jt_expected_warning;
    threads may call it.  */
 #define JT_SET_HOOK(hook, fn) __atomic_store_n (&(hook), (fn), __ATOMIC_RELEASE)
 
+/* If set, called when ext2fs references a disk cache block inside
+   diskfs_catch_exception (dino_ref, for instance); an error it returns
+   makes the access fail as a failed page-in does on the Hurd.  */
+extern int (*jt_ref_fail_hook) (block_t b);
+
 /* Blocks whose latest version, in the disk cache or the directory
    pager, is not on disk: how many in *COUNT, and the first.  Journal
    blocks are not counted.  */
