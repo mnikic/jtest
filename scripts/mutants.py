@@ -282,6 +282,24 @@ MUTANTS = [
             """  else if (0)""",
             "t_release_order",
             why="a wait for freed blocks gives up while a commit's are on the way"),
+    # libdiskfs's node cache (4f48c9dde).
+    Mutant ("nodecache-nref-locked", "libdiskfs/node-cache.c",
+            """  refcounts_ref (&np->refcounts, &result);
+  pthread_rwlock_unlock (&nodecache_lock);
+ referenced:""",
+            """  diskfs_nref (np);
+  result.hard = 2;
+  pthread_rwlock_unlock (&nodecache_lock);
+ referenced:""",
+            "t_nodecache", ["lastref"],
+            why="a lookup locks the node with nodecache_lock held"),
+    Mutant ("nodecache-loser-unmarked", "libdiskfs/node-cache.c",
+            """      forget_unread_node (np);
+      np = tmp;""",
+            """      diskfs_nput (np);
+      np = tmp;""",
+            "t_nodecache", ["lostrace"],
+            why="the losing lookup drops its unread node as one without links"),
 ]
 
 

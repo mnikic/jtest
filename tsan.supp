@@ -9,11 +9,3 @@
 # each set needs_copy again, and the last handle to stop sweeps again.
 # t_sweep_race shows it, and fails if either re-arm is removed.
 race:journal_stop_transaction_locked
-
-# libdiskfs's node cache: a new node is locked, then nodecache_lock is
-# taken to insert it, while a lookup that finds a cached node takes its
-# lock under nodecache_lock (diskfs_nref).  The new node is not in the
-# cache yet, so no lookup can wait for its lock.  (The error path of
-# diskfs_cached_lookup_context, which removes a node it has published,
-# is a real case of the same order; see the jtest notes.)
-deadlock:diskfs_cached_lookup_context
