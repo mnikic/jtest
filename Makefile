@@ -155,6 +155,7 @@ DIR_C ?= $(HURD)/ext2fs/dir.c
 $(B)/dir.o: $(DIR_C) shim/dir/dirent.h | $(B)
 	$(CC) -Ishim/dir $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
+$(B)/t_fdir_mt: tests/t_fdir_ops.c
 $(DIR_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
 	      $(INODE_OBJS) $(B)/fpager.o $(B)/dir.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(INODE_OBJS) \

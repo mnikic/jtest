@@ -25,7 +25,12 @@
 
 #include "files.h"
 
+/* t_fdir_mt.c builds this test with threads, under its own name.  */
+#ifndef NT
+#define NT 1
 #define OPS 300
+#define T_NAME "t_fdir_ops"
+#endif
 #define MAXE 60
 #define NAMELEN 200
 
@@ -43,6 +48,7 @@ static char **snaps;
 static size_t *synced;
 static int nsnaps;
 static unsigned long n_enter, n_remove, n_rewrite, n_check, n_extend;
+static unsigned next_id;
 
 static void
 make_name (char *buf, unsigned id)
@@ -266,7 +272,7 @@ check (size_t n, int torn, const char *img, void *arg)
   char *got = image_text (img);
   int durable = 0, j;
   for (j = 0; j < nsnaps; j++)
-    if (synced[j] <= n)
+    if (__atomic_load_n (&synced[j], __ATOMIC_ACQUIRE) <= n)
       durable = j;
   for (j = nsnaps - 1; j >= 0; j--)
     if (!strcmp (got, snaps[j]))
@@ -281,32 +287,12 @@ check (size_t n, int torn, const char *img, void *arg)
   return j < 0 || j < durable ? msg : NULL;
 }
 
-int
-main (int argc, char **argv)
+/* Operations; with NT > 1 threads make them at once, the root's lock
+   putting them in the order the model has.  */
+static void *
+worker (void *arg)
 {
-  const char *image = argc > 1 ? argv[1] : "build/balloc.img";
-  unsigned seed = argc > 2 ? atoi (argv[2]) : 1;
-  unsigned next_id = 0;
-
-  jt_mount (image, 3, 0);
-  jt_inode_globals ();
-  files_init ();
-  /* The image's root has two files already.  */
-  pthread_mutex_lock (&root->lock);
-  for (int i = 0; i < 2; i++)
-    {
-      struct node *np;
-      snprintf (ents[nents].name, sizeof ents[nents].name, "pool%d", i);
-      CHECK (!lookup (ents[nents].name, LOOKUP, &np, NULL) && np,
-	     "lookup %s", ents[nents].name);
-      ents[nents++].ino = np->cache_id;
-      diskfs_nput (np);
-    }
-  pthread_mutex_unlock (&root->lock);
-  snaps = calloc (OPS + 1, sizeof *snaps);
-  synced = calloc (OPS + 1, sizeof *synced);
-  op_done (1);
-  synced[0] = 0;
+  unsigned seed = (unsigned) (uintptr_t) arg;
 
   for (int op = 0; op < OPS; op++)
     {
@@ -325,21 +311,55 @@ main (int argc, char **argv)
 	}
       if (rand_r (&seed) % 8 == 0)
 	op_check ();
-      pthread_mutex_unlock (&root->lock);
-      int sync = rand_r (&seed) % 5 == 0;
       op_done (0);
-      if (sync)
+      int j = nsnaps - 1;
+      size_t pages = (root->dn_stat.st_size >> log2_block_size) + 1;
+      pthread_mutex_unlock (&root->lock);
+      if (rand_r (&seed) % 5 == 0)
 	{
 	  CHECK (!jt_commit (txn), "commit");
-	  synced[nsnaps - 1] = jt_log_count ();
+	  /* Durable from here on.  */
+	  __atomic_store_n (&synced[j], jt_log_count (), __ATOMIC_RELEASE);
 	}
       else
 	diskfs_journal_stop_transaction (txn);
       for (int e = rand_r (&seed) % 3; e > 0; e--)
-	jt_fp_pageout (root, rand_r (&seed) % ((root->dn_stat.st_size
-						 >> log2_block_size) + 1),
-		       1, 0);
+	jt_fp_pageout (root, rand_r (&seed) % pages, 1, 0);
     }
+  return NULL;
+}
+
+int
+main (int argc, char **argv)
+{
+  const char *image = argc > 1 ? argv[1] : "build/balloc.img";
+  unsigned seed = argc > 2 ? atoi (argv[2]) : 1;
+
+  jt_mount (image, 3, 0);
+  jt_inode_globals ();
+  files_init ();
+  /* The image's root has two files already.  */
+  pthread_mutex_lock (&root->lock);
+  for (int i = 0; i < 2; i++)
+    {
+      struct node *np;
+      snprintf (ents[nents].name, sizeof ents[nents].name, "pool%d", i);
+      CHECK (!lookup (ents[nents].name, LOOKUP, &np, NULL) && np,
+	     "lookup %s", ents[nents].name);
+      ents[nents++].ino = np->cache_id;
+      diskfs_nput (np);
+    }
+  pthread_mutex_unlock (&root->lock);
+  snaps = calloc (NT * OPS + 1, sizeof *snaps);
+  synced = calloc (NT * OPS + 1, sizeof *synced);
+  op_done (1);
+  synced[0] = 0;
+
+  pthread_t t[NT];
+  for (int i = 0; i < NT; i++)
+    pthread_create (&t[i], NULL, worker, (void *) (uintptr_t) (seed * 31 + i));
+  for (int i = 0; i < NT; i++)
+    pthread_join (t[i], NULL);
   pthread_mutex_lock (&root->lock);
   op_check ();
   pthread_mutex_unlock (&root->lock);
@@ -348,7 +368,7 @@ main (int argc, char **argv)
   CHECK (warnings == 0, "%lu journal warnings", warnings);
   CHECK (jt_fp_stale_reads () == 0, "%lu stale file page-ins",
 	 jt_fp_stale_reads ());
-  const char *out = "build/t_fdir_ops.img";
+  const char *out = "build/" T_NAME ".img";
   jt_save_image (out);
   CHECK (jt_run ("e2fsck -fn %s >%s.fsck 2>&1", out, out) == 0,
 	 "e2fsck -fn %s is not clean after the unmount (see %s.fsck)", out,
@@ -358,10 +378,10 @@ main (int argc, char **argv)
 	 "unmount are not the last operation's");
   free (got);
 
-  size_t checked = jt_crash_check ("t_fdir_ops", check, NULL);
-  printf ("t_fdir_ops: OK (%lu enters, %d of them growing the directory "
-	  "to %ld bytes, %lu removes, %lu rewrites, %lu checks; %zu writes, "
-	  "%zu crash images)\n", n_enter, (int) n_extend,
+  size_t checked = jt_crash_check (T_NAME, check, NULL);
+  printf (T_NAME ": OK (%d threads; %lu enters, %d of them growing the "
+	  "directory to %ld bytes, %lu removes, %lu rewrites, %lu checks; "
+	  "%zu writes, %zu crash images)\n", NT, n_enter, (int) n_extend,
 	  (long) root->dn_stat.st_size, n_remove, n_rewrite, n_check,
 	  jt_log_count (), checked);
   return 0;
