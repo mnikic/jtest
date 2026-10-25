@@ -364,6 +364,15 @@ MUTANTS = [
       if (cred->po->openstat & O_APPEND)""",
             "t_fwrite_enospc",
             why="a retried append goes past the end its first try made"),
+    # libdiskfs's name cache against the directories (t_fdir_ren).
+    Mutant ("nc-dirremove-no-purge", "libdiskfs/dirremove.c",
+            """  diskfs_purge_lookup_cache (dp, np);
+""", "",
+            "t_fdir_ren", why="a removed name stays in the name cache"),
+    Mutant ("nc-direnter-no-enter", "libdiskfs/direnter.c",
+            """  diskfs_enter_lookup_cache (dp, np, name);
+""", "",
+            "t_fdir_ren", why="a new name keeps its cached absence"),
     # Directory operations on a full disk (t_fdir_enospc), and a rename
     # of a directory that fails after it changed ".." (t_fdir_renfail).
     Mutant ("dir-retry-mkdir", "libdiskfs/dir-mkdir.c",

@@ -8,6 +8,8 @@
      create   a file in a directory, as dir_mkfile and dir_link do in one
 	      (diskfs_create_node with a name);
      unlink   a name, as dir-unlink.c does (directories are left alone);
+     link     a file of one directory under a name of another, or the
+	      same, through diskfs_S_dir_link: files get more names;
      rename   a name of one directory to a name of another, or the same,
 	      through diskfs_S_dir_rename: files move or replace files,
 	      directories move, and nest into each other unless that would
@@ -20,6 +22,10 @@
    gone, taken, or a directory where a file is expected); pages of the
    directories are evicted at random; some operations commit.
 
+   Now and then a thread locks a directory and checks a name in libdiskfs's
+   name cache against the directory (namecache.h); once the threads are
+   done, every name of the set and ".." in every directory.
+
    After the unmount and in every crash image, e2fsck -fn is clean: link
    counts, "..", the directories reachable, no entry to a free inode.
    Which names the threads' races leave is not predicted: a crash image
@@ -27,6 +33,7 @@
 
 #include "files.h"
 #include "fs_S.h"
+#include "namecache.h"
 
 #define NDIRS 4
 #define NT 4
@@ -159,6 +166,37 @@ op_rename (int fd, const char *fromname, int td, const char *toname)
   __atomic_add_fetch (&n_rename, 1, __ATOMIC_RELAXED);
 }
 
+static unsigned long n_link;
+
+/* Link FROMNAME of directory FD, if it is a file, as TONAME in TD.  */
+static void
+op_link (int fd, const char *fromname, int td, const char *toname)
+{
+  struct node *np;
+  pthread_mutex_lock (&dirs[fd]->lock);
+  error_t err = diskfs_lookup (dirs[fd], (char *) fromname, LOOKUP, &np,
+			       NULL, &creds[fd]);
+  pthread_mutex_unlock (&dirs[fd]->lock);
+  if (err)
+    return;
+  int file = S_ISREG (np->dn_stat.st_mode);
+  pthread_mutex_unlock (&np->lock);
+  if (file)
+    {
+      struct peropen po = { .np = np };
+      struct protid fc = cred;
+      fc.po = &po;
+      err = diskfs_S_dir_link (&creds[td], &fc, toname, 1);
+      CHECK (allowed (err) || err == EMLINK, "link: %s", strerror (err));
+      if (!err)
+	__atomic_add_fetch (&n_link, 1, __ATOMIC_RELAXED);
+    }
+  /* The last reference can drop the node: in a handle.  */
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  diskfs_nrele (np);
+  diskfs_journal_stop_transaction (txn);
+}
+
 /* Move directory I to directory TD under name TONAME.  */
 static void
 op_move_dir (int i, int td, const char *toname)
@@ -189,6 +227,8 @@ worker (void *arg)
 	op_move_dir (1 + rand_r (&seed) % NDIRS, e, b);
       else if (r < 4)
 	op_rename (d, a, e, b);
+      else if (r == 4)
+	op_link (d, a, e, b);
       else
 	{
 	  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
@@ -200,6 +240,15 @@ worker (void *arg)
 	    CHECK (!jt_commit (txn), "commit");
 	  else
 	    diskfs_journal_stop_transaction (txn);
+	}
+      if (rand_r (&seed) % 3 == 0)
+	{
+	  int c = rand_r (&seed) % (NDIRS + 1);
+	  name_of (a, rand_r (&seed) % NNAMES);
+	  pthread_mutex_lock (&dirs[c]->lock);
+	  const char *wrong = nc_check (dirs[c], a, &creds[c]);
+	  pthread_mutex_unlock (&dirs[c]->lock);
+	  CHECK (!wrong, "%s", wrong);
 	}
       for (int x = rand_r (&seed) % 3; x > 0; x--)
 	{
@@ -282,6 +331,23 @@ main (int argc, char **argv)
     pthread_join (t[i], NULL);
   unsigned long syncs = psync ? jt_periodic_sync_stop () : 0;
 
+  /* The name cache, with nothing running.  */
+  for (int d = 0; d <= NDIRS; d++)
+    {
+      char n[16];
+      pthread_mutex_lock (&dirs[d]->lock);
+      for (int i = 0; i <= NNAMES; i++)
+	{
+	  if (i < NNAMES)
+	    name_of (n, i);
+	  else
+	    strcpy (n, "..");
+	  const char *wrong = nc_check (dirs[d], n, &creds[d]);
+	  CHECK (!wrong, "after the threads: %s", wrong);
+	}
+      pthread_mutex_unlock (&dirs[d]->lock);
+    }
+
   /* The last references can write the inodes: in a handle, as an RPC's
      release is.  */
   diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
@@ -300,8 +366,10 @@ main (int argc, char **argv)
 
   size_t checked = jt_crash_check ("t_fdir_ren", NULL, NULL);
   printf ("t_fdir_ren: OK (%d threads; %lu creates, %lu unlinks, %lu "
-	  "renames, %lu of directories, %lu refused; %lu syncs; %zu writes, "
-	  "%zu crash images)\n", NT, n_create, n_unlink, n_rename,
-	  n_dir_rename, n_err, syncs, jt_log_count (), checked);
+	  "renames, %lu of directories, %lu refused, %lu links; %lu syncs; "
+	  "%lu name cache checks, %lu hits, %lu negative; %zu writes, %zu "
+	  "crash images)\n", NT, n_create, n_unlink, n_rename, n_dir_rename,
+	  n_err, n_link, syncs, nc_checks, nc_hits, nc_negative,
+	  jt_log_count (), checked);
   return 0;
 }
