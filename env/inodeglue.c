@@ -212,3 +212,27 @@ ext2_start_journal (void)
   /* Before anything is journaled.  */
   ext2_set_needs_recovery ();
 }
+
+/* The inode tests link with --wrap=diskfs_set_node_times and
+   --wrap=diskfs_make_node_alloc, so that a test can stop a thread in
+   _diskfs_lastref, whose first call the former is, or in
+   diskfs_cached_lookup_context between its miss and its insertion
+   (ext2fs's diskfs_user_make_node allocates the node with the latter;
+   node-cache.c has its own weak diskfs_user_make_node, so its call of
+   it cannot be wrapped) (t_nodecache).  By default they are the real
+   ones.  */
+void __real_diskfs_set_node_times (struct node *np);
+
+__attribute__ ((weak)) void
+__wrap_diskfs_set_node_times (struct node *np)
+{
+  __real_diskfs_set_node_times (np);
+}
+
+struct node *__real_diskfs_make_node_alloc (size_t size);
+
+__attribute__ ((weak)) struct node *
+__wrap_diskfs_make_node_alloc (size_t size)
+{
+  return __real_diskfs_make_node_alloc (size);
+}

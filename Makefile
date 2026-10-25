@@ -56,7 +56,8 @@ EXT2_OBJS = $(B)/balloc.o $(B)/getblk.o $(B)/truncate.o $(B)/ext2glue.o \
 # libdiskfs's node cache, references and drop.
 INODE_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_orphan*.c \
 					       tests/t_rwcycle*.c \
-					       tests/t_abortfiles*.c))
+					       tests/t_abortfiles*.c \
+					       tests/t_nodecache*.c))
 LIBDISKFS_NODE = node-cache node-drop node-nput node-nputl node-nref \
 		 node-nrefl node-nrele node-nrelel node-make node-update \
 		 node-times node-lastref node-create validate-owner \
@@ -136,7 +137,8 @@ $(B)/ld-%.o: $(HURD)/libdiskfs/%.c | $(B)
 $(INODE_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
 		$(INODE_OBJS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(INODE_OBJS) $(LDFLAGS) \
-	  -Wl,--no-warn-execstack
+	  -Wl,--no-warn-execstack -Wl,--wrap=diskfs_set_node_times \
+	  -Wl,--wrap=diskfs_make_node_alloc
 
 $(EXT2_TESTS): $(B)/t_trunc%: tests/t_trunc%.c tests/common.h $(ENV) \
 	       $(EXT2_OBJS)
@@ -176,7 +178,7 @@ $(B)/full.img: $(B)/balloc.img
 
 check: all
 	@for t in $(TESTS); do \
-	  case $$t in *t_balloc_full*|*t_balloc_lock*) img=$(B)/full.img;; *t_balloc*|*t_trunc*|*t_orphan*|*t_rwcycle*|*t_abortfiles*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
+	  case $$t in *t_balloc_full*|*t_balloc_lock*) img=$(B)/full.img;; *t_balloc*|*t_trunc*|*t_orphan*|*t_rwcycle*|*t_abortfiles*|*t_nodecache*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
 	  $$t $$img 2>$$t.log || { tail -40 $$t.log; echo "FAIL: $$t (log: $$t.log)"; exit 1; }; \
 	done
 
