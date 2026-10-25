@@ -355,11 +355,20 @@ main (int argc, char **argv)
   op_done (1);
   synced[0] = 0;
 
+  /* The periodic sync, every few milliseconds, unless
+     JT_NO_PERIODIC_SYNC (JT_PERIODIC_SYNC_US: at most that long apart,
+     default 2000): it writes every cached node, each under its
+     lock, in a handle of its own, and commits.  */
+  int psync = !getenv ("JT_NO_PERIODIC_SYNC");
+  if (psync)
+    jt_periodic_sync_start (getenv ("JT_PERIODIC_SYNC_US")
+			    ? atoi (getenv ("JT_PERIODIC_SYNC_US")) : 2000, seed);
   pthread_t t[NT];
   for (int i = 0; i < NT; i++)
     pthread_create (&t[i], NULL, worker, (void *) (uintptr_t) (seed * 31 + i));
   for (int i = 0; i < NT; i++)
     pthread_join (t[i], NULL);
+  unsigned long syncs = psync ? jt_periodic_sync_stop () : 0;
   pthread_mutex_lock (&root->lock);
   op_check ();
   pthread_mutex_unlock (&root->lock);
@@ -381,8 +390,8 @@ main (int argc, char **argv)
   size_t checked = jt_crash_check (T_NAME, check, NULL);
   printf (T_NAME ": OK (%d threads; %lu enters, %d of them growing the "
 	  "directory to %ld bytes, %lu removes, %lu rewrites, %lu checks; "
-	  "%zu writes, %zu crash images)\n", NT, n_enter, (int) n_extend,
-	  (long) root->dn_stat.st_size, n_remove, n_rewrite, n_check,
-	  jt_log_count (), checked);
+	  "%lu syncs; %zu writes, %zu crash images)\n", NT, n_enter,
+	  (int) n_extend, (long) root->dn_stat.st_size, n_remove, n_rewrite,
+	  n_check, syncs, jt_log_count (), checked);
   return 0;
 }

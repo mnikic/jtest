@@ -1354,6 +1354,21 @@ sync_file_pagers (int wait)
   while (pending)
     pthread_cond_wait (&req_done, &req_lock);
   pthread_mutex_unlock (&req_lock);
+
+  if (jt_sync_files_hook)
+    jt_sync_files_hook (wait);
+}
+
+void (*jt_sync_files_hook) (int wait);
+
+/* inode.c's, where it is linked in.  */
+extern void write_all_disknodes (void) __attribute__ ((weak));
+
+static void
+real_write_all_disknodes (diskfs_transaction_t *txn)
+{
+  (void) txn;
+  write_all_disknodes ();
 }
 
 void
@@ -1362,6 +1377,8 @@ jt_sync_everything (int wait)
   /* pager.c: commit the inodes first, then sync the file pagers with no
      handle held.  */
   diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  if (!jt_write_all_disknodes && write_all_disknodes)
+    jt_write_all_disknodes = real_write_all_disknodes;
   if (jt_write_all_disknodes)
     jt_write_all_disknodes (txn);
   diskfs_journal_commit_transaction (txn);
@@ -1375,6 +1392,41 @@ jt_sync_everything (int wait)
 
   /* sync-interval.c, after diskfs_sync_everything.  */
   diskfs_set_hypermetadata (0, 0);
+}
+
+/* libdiskfs's periodic sync thread, but every few milliseconds.  */
+static pthread_t psync_thread;
+static int psync_stop;
+static unsigned psync_max_us;
+static unsigned long psync_passes;
+
+static void *
+psync (void *arg)
+{
+  unsigned seed = (unsigned) (uintptr_t) arg;
+  while (!__atomic_load_n (&psync_stop, __ATOMIC_ACQUIRE))
+    {
+      jt_sync_everything (rand_r (&seed) % 4 == 0);
+      __atomic_add_fetch (&psync_passes, 1, __ATOMIC_RELAXED);
+      usleep (rand_r (&seed) % psync_max_us);
+    }
+  return NULL;
+}
+
+void
+jt_periodic_sync_start (unsigned max_us, unsigned seed)
+{
+  psync_max_us = max_us ? max_us : 1;
+  __atomic_store_n (&psync_stop, 0, __ATOMIC_RELEASE);
+  pthread_create (&psync_thread, NULL, psync, (void *) (uintptr_t) seed);
+}
+
+unsigned long
+jt_periodic_sync_stop (void)
+{
+  __atomic_store_n (&psync_stop, 1, __ATOMIC_RELEASE);
+  pthread_join (psync_thread, NULL);
+  return psync_passes;
 }
 
 void

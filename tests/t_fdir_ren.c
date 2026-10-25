@@ -268,10 +268,19 @@ main (int argc, char **argv)
       CHECK (!jt_commit (txn), "commit mkdir");
     }
 
+  /* The periodic sync, every few milliseconds, unless
+     JT_NO_PERIODIC_SYNC (JT_PERIODIC_SYNC_US: at most that long apart,
+     default 2000): it writes every cached node, each under its
+     lock, in a handle of its own, and commits.  */
+  int psync = !getenv ("JT_NO_PERIODIC_SYNC");
+  if (psync)
+    jt_periodic_sync_start (getenv ("JT_PERIODIC_SYNC_US")
+			    ? atoi (getenv ("JT_PERIODIC_SYNC_US")) : 2000, seed);
   for (int i = 0; i < NT; i++)
     pthread_create (&t[i], NULL, worker, (void *) (uintptr_t) (seed * 31 + i));
   for (int i = 0; i < NT; i++)
     pthread_join (t[i], NULL);
+  unsigned long syncs = psync ? jt_periodic_sync_stop () : 0;
 
   /* The last references can write the inodes: in a handle, as an RPC's
      release is.  */
@@ -291,8 +300,8 @@ main (int argc, char **argv)
 
   size_t checked = jt_crash_check ("t_fdir_ren", NULL, NULL);
   printf ("t_fdir_ren: OK (%d threads; %lu creates, %lu unlinks, %lu "
-	  "renames, %lu of directories, %lu refused; %zu writes, %zu crash "
-	  "images)\n", NT, n_create, n_unlink, n_rename, n_dir_rename, n_err,
-	  jt_log_count (), checked);
+	  "renames, %lu of directories, %lu refused; %lu syncs; %zu writes, "
+	  "%zu crash images)\n", NT, n_create, n_unlink, n_rename,
+	  n_dir_rename, n_err, syncs, jt_log_count (), checked);
   return 0;
 }

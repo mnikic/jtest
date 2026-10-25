@@ -503,6 +503,8 @@ fp_node_freed (struct node *np)
   pthread_mutex_unlock (&fp_lock);
 }
 
+static void fp_sync_files (int wait);
+
 static struct fpager *
 fpager_of (struct node *np, int create)
 {
@@ -543,6 +545,7 @@ fpager_of (struct node *np, int create)
       jt_fault_hook = fp_fault_hook;
       jt_umount_hook = jt_fp_sync_all;
       jt_norefs_hook = fp_node_freed;
+      jt_sync_files_hook = fp_sync_files;
     }
   fpagers[nfpagers++] = fp;
   return fp;
@@ -852,6 +855,28 @@ jt_fp_pageout (struct node *np, size_t page, int evict, int wait)
     jt_pager_call (fp_pageout, r);
   else
     jt_pager_call_async (fp_pageout, r);
+}
+
+/* pager_sync of every file pager but a directory's (with a journal, its
+   blocks are journaled), as diskfs_sync_everything does: its dirty
+   pages written, kept; with WAIT, waited for.  */
+static void
+fp_sync_files (int wait)
+{
+  for (int i = 0; i < nfpagers; i++)
+    for (size_t pg = 0; pg < FP_PAGES; pg++)
+      {
+	pthread_mutex_lock (&fp_lock);
+	struct fp_req *r = NULL;
+	if (fpagers[i]->np && !(ext2_journal && fpagers[i]->dir)
+	    && (fpagers[i]->dirty[pg] || fpagers[i]->paging_out[pg]))
+	  r = pageout_req (fpagers[i], pg, 0);
+	pthread_mutex_unlock (&fp_lock);
+	if (r && wait)
+	  jt_pager_call (fp_pageout, r);
+	else if (r)
+	  jt_pager_call_async (fp_pageout, r);
+      }
 }
 
 /* pager_shutdown of every file pager: its dirty pages written, kept.  */

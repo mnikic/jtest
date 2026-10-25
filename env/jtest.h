@@ -127,7 +127,17 @@ void jt_file_pageout (block_t b, int evict, int wait);
    every file pager's dirty pages written out except directories', and
    waited for with WAIT; then a store_sync with WAIT.  */
 void jt_sync_everything (int wait);
+/* jt_write_all_disknodes is inode.c's write_all_disknodes where that is
+   linked in and the test sets none.  jt_sync_files_hook, if set, syncs
+   other file pagers (env/fpager.c's) too.  */
 extern void (*jt_write_all_disknodes) (diskfs_transaction_t *txn);
+extern void (*jt_sync_files_hook) (int wait);
+
+/* A thread doing jt_sync_everything every up to MAX_US microseconds,
+   waiting one time in four, as libdiskfs's periodic sync does every few
+   seconds; and its end, which returns how many syncs it did.  */
+void jt_periodic_sync_start (unsigned max_us, unsigned seed);
+unsigned long jt_periodic_sync_stop (void);
 
 /* journal_mark_dirty_external of directory block B, as the file pager's
    mapping has it.  */
