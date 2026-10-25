@@ -145,7 +145,15 @@ $(INODE_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
 	  -Wl,--wrap=diskfs_make_node_alloc -Wl,--wrap=diskfs_node_norefs
 
 # Tests on the real directory code too, with a file pager for nodes
-# (env/fpager.c).
+# (env/fpager.c), and libdiskfs's directory operations around dir.c.
+DIR_LIBDISKFS = dir-rename dir-renamed lookup direnter dirremove dirrewrite \
+		name-cache dir-init dir-clear
+DIR_LIBDISKFS_OBJS = $(patsubst %,$(B)/ld-%.o,$(DIR_LIBDISKFS)) \
+		     $(B)/dirglue.o $(B)/murmur3.o
+$(B)/dirglue.o: env/dirglue.c env/jtest.h | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+$(B)/murmur3.o: $(HURD)/libihash/murmur3.c | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 DIR_TESTS = $(patsubst tests/%.c,$(B)/%,$(wildcard tests/t_fdir*.c))
 $(B)/fpager.o: env/fpager.c env/jtest.h | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
@@ -157,9 +165,10 @@ $(B)/dir.o: $(DIR_C) shim/dir/dirent.h | $(B)
 
 $(B)/t_fdir_mt: tests/t_fdir_ops.c
 $(DIR_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
-	      $(INODE_OBJS) $(B)/fpager.o $(B)/dir.o
+	      $(INODE_OBJS) $(B)/fpager.o $(B)/dir.o $(DIR_LIBDISKFS_OBJS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(ENV) $(INODE_OBJS) \
-	  $(B)/fpager.o $(B)/dir.o $(LDFLAGS) -Wl,--no-warn-execstack \
+	  $(B)/fpager.o $(B)/dir.o $(DIR_LIBDISKFS_OBJS) $(LDFLAGS) \
+	  -Wl,--no-warn-execstack \
 	  -Wl,--wrap=diskfs_set_node_times -Wl,--wrap=diskfs_make_node_alloc \
 	  -Wl,--wrap=diskfs_node_norefs -Wl,--wrap=munmap -Wl,--wrap=mmap
 
