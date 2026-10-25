@@ -39,6 +39,14 @@ typedef int memory_object_copy_strategy_t;
 #endif
 
 #define KERN_SUCCESS 0
+
+/* Port right dispositions and send errors, for libdiskfs's dir_lookup
+   and file_set_translator; the harness has no IPC.  */
+#define MACH_MSG_TYPE_MOVE_SEND 17
+#define MACH_MSG_TYPE_COPY_SEND 19
+#define MACH_MSG_TYPE_MAKE_SEND 20
+#define MACH_SEND_INVALID_DEST 0x10000003
+#define MIG_SERVER_DIED -308
 #define MACH_PORT_NULL ((mach_port_t) 0)
 #define MACH_PORT_DEAD ((mach_port_t) ~0)
 #define MACH_PORT_VALID(p) ((p) != MACH_PORT_NULL && (p) != MACH_PORT_DEAD)

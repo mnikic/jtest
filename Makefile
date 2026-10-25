@@ -147,7 +147,7 @@ $(INODE_TESTS): $(B)/%: tests/%.c tests/common.h tests/files.h $(ENV) \
 # Tests on the real directory code too, with a file pager for nodes
 # (env/fpager.c), and libdiskfs's directory operations around dir.c.
 DIR_LIBDISKFS = dir-rename dir-renamed lookup direnter dirremove dirrewrite \
-		io-write rdwr-internal \
+		io-write rdwr-internal dir-mkdir dir-link dir-lookup file-set-trans \
 		name-cache dir-init dir-clear
 # A patched copy can stand in for the tree's.
 DIR_RENAMED_C ?= $(HURD)/libdiskfs/dir-renamed.c
@@ -157,7 +157,9 @@ DIRENTER_C ?= $(HURD)/libdiskfs/direnter.c
 $(B)/ld-direnter.o: $(DIRENTER_C) | $(B)
 	$(CC) $(CPPFLAGS) -I$(HURD)/libdiskfs $(CFLAGS) -c -o $@ $<
 DIR_LIBDISKFS_OBJS = $(patsubst %,$(B)/ld-%.o,$(DIR_LIBDISKFS)) \
-		     $(B)/dirglue.o $(B)/murmur3.o
+		     $(B)/dirglue.o $(B)/rpcglue.o $(B)/murmur3.o
+$(B)/rpcglue.o: env/rpcglue.c env/jtest.h | $(B)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 $(B)/dirglue.o: env/dirglue.c env/jtest.h | $(B)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 $(B)/murmur3.o: $(HURD)/libihash/murmur3.c | $(B)

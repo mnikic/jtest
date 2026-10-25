@@ -2,6 +2,7 @@
 each runs on, and running one in a directory of its own."""
 
 import os
+import signal
 import shutil
 import subprocess
 import time
@@ -10,7 +11,7 @@ JTEST = os.path.dirname (os.path.dirname (os.path.abspath (__file__)))
 
 # Tests that take no seed: one run is all there is.
 DETERMINISTIC = {"t_forget_race", "t_free_only", "t_late_edit", "t_logfmt",
-                 "t_fdir_renlock", "t_fdir_dead", "t_nodecache", "t_notify_race",
+                 "t_fdir_renlock", "t_fdir_dead", "t_fdir_renfail", "t_fdir_enospc", "t_nodecache", "t_notify_race",
                  "t_release_order",
                  "t_sweep_race"}
 
@@ -24,7 +25,8 @@ def tests ():
 
 def image_for (test):
     """As make check picks it."""
-    if test.startswith (("t_balloc_full", "t_balloc_lock", "t_fwrite_enospc")):
+    if test.startswith (("t_balloc_full", "t_balloc_lock", "t_fwrite_enospc",
+                         "t_fdir_renfail", "t_fdir_enospc")):
         return "full.img"
     for p in ("t_balloc", "t_trunc", "t_orphan", "t_rwcycle", "t_abortfiles",
               "t_nodecache", "t_fdir"):
@@ -71,13 +73,23 @@ def run (binary, test, seed, cwd, extra_args=(), env=None, timeout=1800,
     args = [binary, os.path.join ("build", image_for (test)), str (seed)]
     args += list (extra_args)
     start = time.time ()
+    # In a process group of its own: a timeout kills what the test forked
+    # too (t_ioerr runs each case in a child, the crash check its
+    # workers), which would hang on otherwise.
     with open (os.path.join (cwd, "out.log"), "w") as out:
+        p = subprocess.Popen (args, cwd=cwd, env=e, stdout=out,
+                              stderr=subprocess.STDOUT,
+                              start_new_session=True)
         try:
-            p = subprocess.run (args, cwd=cwd, env=e, stdout=out,
-                                stderr=subprocess.STDOUT, timeout=timeout)
-            status = p.returncode
+            status = p.wait (timeout=timeout)
         except subprocess.TimeoutExpired:
             status = None
+        try:
+            os.killpg (p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if status is None:
+            p.wait ()
     return status, time.time () - start
 
 

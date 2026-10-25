@@ -1797,6 +1797,28 @@ watchdog (int sig)
   _exit (3);
 }
 
+/* After the unmount, the checks (the crash images, e2fsck) get
+   JT_WATCHDOG_AFTER seconds (default 1800), so that a hang there ends
+   too.  */
+static void
+watchdog_after (int sig)
+{
+  static const char msg[] = "jtest: DEADLOCK: the checks after the "
+    "unmount did not finish in time (JT_WATCHDOG_AFTER)\n";
+  (void) sig;
+  if (write (2, msg, sizeof msg - 1) < 0)
+    _exit (3);
+  _exit (3);
+}
+
+static void
+watch_after_unmount (void)
+{
+  signal (SIGALRM, watchdog_after);
+  alarm (getenv ("JT_WATCHDOG_AFTER") ? atoi (getenv ("JT_WATCHDOG_AFTER"))
+	 : 1800);
+}
+
 void
 jt_mount (const char *image, int npagers, int flags)
 {
@@ -1924,7 +1946,7 @@ jt_umount (void)
     jt_umount_hook ();
   diskfs_journal_shutdown ();
   stop_pagers ();
-  alarm (0);
+  watch_after_unmount ();
   return jt_warnings;
 }
 
@@ -2037,7 +2059,7 @@ void
 jt_abandon (void)
 {
   stop_pagers ();
-  alarm (0);
+  watch_after_unmount ();
 }
 
 /* ---------------------------------------------------------------- */

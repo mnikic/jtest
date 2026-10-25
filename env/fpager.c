@@ -561,6 +561,45 @@ diskfs_get_filemap (struct node *np, vm_prot_t prot)
   return (mach_port_t) (FP_PORT_BASE + i);
 }
 
+/* The file pager mappings unmapped last, until their addresses are
+   mapped again: a second munmap of one is a bug.  A lock of their own,
+   as the file pager maps its memory with fp_lock held.  */
+#define UNMAPPED 64
+static void *unmapped[UNMAPPED];
+static unsigned unmapped_next;
+static pthread_mutex_t unmapped_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* [P, P + LEN) is mapped again.  */
+static void
+mapped_again (void *p, size_t len)
+{
+  pthread_mutex_lock (&unmapped_lock);
+  for (int i = 0; i < UNMAPPED; i++)
+    if ((char *) unmapped[i] >= (char *) p
+	&& (char *) unmapped[i] < (char *) p + len)
+      unmapped[i] = NULL;
+  pthread_mutex_unlock (&unmapped_lock);
+}
+
+static void
+unmapped_now (void *p)
+{
+  pthread_mutex_lock (&unmapped_lock);
+  unmapped[unmapped_next++ % UNMAPPED] = p;
+  pthread_mutex_unlock (&unmapped_lock);
+}
+
+static int
+unmapped_already (void *p)
+{
+  int found = 0;
+  pthread_mutex_lock (&unmapped_lock);
+  for (int i = 0; i < UNMAPPED && !found; i++)
+    found = unmapped[i] == p;
+  pthread_mutex_unlock (&unmapped_lock);
+  return found;
+}
+
 kern_return_t
 vm_map (task_t t, vm_address_t *a, vm_size_t s, vm_address_t mask,
 	boolean_t anywhere, mach_port_t obj, vm_offset_t off, boolean_t copy,
@@ -584,6 +623,7 @@ vm_map (task_t t, vm_address_t *a, vm_size_t s, vm_address_t mask,
   m->maxprot = (cur & VM_PROT_READ ? PROT_READ : 0)
     | (cur & VM_PROT_WRITE ? PROT_WRITE : 0);
   pthread_mutex_lock (&fp_lock);
+  mapped_again (p, s);
   m->next = fp->maps;
   fp->maps = m;
   for (size_t pg = off >> log2_block_size;
@@ -638,8 +678,13 @@ __wrap_munmap (void *addr, size_t len)
 	  FP_CHECK (m->len == len, "a partial munmap of a file pager mapping");
 	  *mp = m->next;
 	  free (m);
+	  unmapped_now (addr);
 	  goto out;
 	}
+  /* Not mapped now: it must not be one unmapped already, which another
+     mapping can take in the meantime.  */
+  FP_CHECK (!unmapped_already (addr), "munmap of a file pager mapping at "
+	    "%p that is unmapped already", addr);
  out:
   pthread_mutex_unlock (&fp_lock);
   return __real_munmap (addr, len);
@@ -686,7 +731,12 @@ diskfs_node_rdwr (struct node *np, char *data, loff_t off,
 		VM_PROT_READ | VM_PROT_WRITE, 0);
   if (err)
     return err;
-  err = diskfs_catch_exception ();
+  /* Each page's fault taken by hand first, as in pager_memcpy.  */
+  struct fpager *fp = fp_of_port (obj);
+  for (vm_offset_t pg = start; !err && pg < start + len; pg += block_size)
+    err = fault (fp, pg >> log2_block_size, dir);
+  if (!err)
+    err = diskfs_catch_exception ();
   if (!err)
     {
       if (dir)
@@ -836,5 +886,8 @@ __wrap_mmap (void *addr, size_t len, int prot, int flags, int fd, off_t off)
       flags |= MAP_PRIVATE;
       fd = -1;
     }
-  return __real_mmap (addr, len, prot, flags, fd, off);
+  void *p = __real_mmap (addr, len, prot, flags, fd, off);
+  if (p != MAP_FAILED)
+    mapped_again (p, len);
+  return p;
 }

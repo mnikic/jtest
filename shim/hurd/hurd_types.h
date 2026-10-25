@@ -31,6 +31,21 @@ typedef struct statfs fsys_statfsbuf_t;
 #ifndef O_WRITE
 #define O_WRITE 0x0002
 #endif
+/* And the rest of the Hurd's own, on bits Linux's do not use.  */
+#ifndef O_EXEC
+#define O_EXEC 0x0004
+#endif
+#define O_SHLOCK 0x08000000
+#define O_NOLINK 0x10000000
+#define O_NOTRANS 0x20000000
+#define O_EXLOCK 0x40000000
+#define O_HURD (~0)
+
+/* <hurd/hurd_types.h>'s translator flags.  */
+#define FS_TRANS_FORCE 0x00000001
+#define FS_TRANS_EXCL 0x00000002
+#define FS_TRANS_SET 0x00000004
+#define FS_TRANS_ORPHAN 0x00000008
 
 typedef enum retry_type
 {

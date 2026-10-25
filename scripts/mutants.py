@@ -362,6 +362,50 @@ MUTANTS = [
       if (cred->po->openstat & O_APPEND)""",
             "t_fwrite_enospc",
             why="a retried append goes past the end its first try made"),
+    # Directory operations on a full disk (t_fdir_enospc), and a rename
+    # of a directory that fails after it changed ".." (t_fdir_renfail).
+    Mutant ("dir-retry-mkdir", "libdiskfs/dir-mkdir.c",
+            """diskfs_retry_enospc (try_mkdir""", """(try_mkdir""",
+            "t_fdir_enospc", why="a mkdir does not try again"),
+    Mutant ("dir-retry-link", "libdiskfs/dir-link.c",
+            """diskfs_retry_enospc (try_link""", """(try_link""",
+            "t_fdir_enospc", why="a link does not try again"),
+    Mutant ("dir-retry-rename", "libdiskfs/dir-rename.c",
+            """diskfs_retry_enospc (try_rename""", """(try_rename""",
+            "t_fdir_enospc", why="a rename does not try again"),
+    Mutant ("dir-retry-lookup", "libdiskfs/dir-lookup.c",
+            """  if (!(flags & O_CREAT))""", """  if (1)""",
+            "t_fdir_enospc", why="a create does not try again"),
+    Mutant ("dir-lookup-no-copy", "libdiskfs/dir-lookup.c",
+            """(memcpy (name, filename, len),""",
+            """(name = (char *) filename,""",
+            "t_fdir_enospc",
+            why="a retried create gets the path the first try cut"),
+    Mutant ("dir-retry-symlink", "libdiskfs/file-set-trans.c",
+            """diskfs_retry_enospc (try_set_translator""",
+            """(try_set_translator""",
+            "t_fdir_enospc", why="a symlink does not try again"),
+    Mutant ("rename-dotdot-not-undone", "libdiskfs/dir-renamed.c",
+            """      if (fdp != tdp)
+	{
+	  error_t undo = undo_dotdot (fnp, fdp, tdp, fromcred);""",
+            """      if (0)
+	{
+	  error_t undo = undo_dotdot (fnp, fdp, tdp, fromcred);""",
+            "t_fdir_renfail",
+            why="a directory left where it was keeps the new parent as \"..\""),
+    Mutant ("rename-emlink-late", "libdiskfs/dir-renamed.c",
+            """  if ((fdp != tdp && tdp->dn_stat.st_nlink == diskfs_link_max - 1)
+      || fnp->dn_stat.st_nlink == diskfs_link_max - 1)""",
+            """  if (fdp != tdp && tdp->dn_stat.st_nlink == diskfs_link_max - 1)""",
+            "t_fdir_renfail",
+            why="the moved directory's link count is not checked first"),
+    Mutant ("rename-direnter-ds-kept", "libdiskfs/dir-renamed.c",
+            """      err = diskfs_direnter (tdp, toname, fnp, ds, tocred);
+      ds = 0;""",
+            """      err = diskfs_direnter (tdp, toname, fnp, ds, tocred);""",
+            "t_fdir_renfail",
+            why="a failed direnter's mapping is unmapped twice"),
     # libdiskfs's renames and entries (t_fdir_renlock, t_fdir_ren,
     # t_fdir_dead).
     Mutant ("rename-bottom-up", "libdiskfs/dir-renamed.c",

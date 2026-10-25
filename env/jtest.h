@@ -173,6 +173,11 @@ void jt_drain (void);
 /* Record WHAT happened to block B for the trace printed on a stale
    page-in; DATA, if not NULL, is an image of the block.  */
 void jt_trace (block_t b, const char *what, const void *data);
+/* The protid that a libdiskfs RPC handed back as PORT (dir_lookup's
+   retry_port), or NULL; and its release, with its peropen.  */
+struct protid *jt_protid_of_port (mach_port_t port);
+void jt_protid_release (mach_port_t port);
+
 /* Print the trace's events of block B, oldest first.  */
 void jt_trace_dump (block_t b);
 
