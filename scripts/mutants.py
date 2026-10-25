@@ -308,6 +308,13 @@ MUTANTS = [
     forget_unread_node (np);""",
             "t_nodecache", ["readerr"],
             why="a node whose read failed keeps the cache's reference"),
+    Mutant ("nodecache-readwait", "libdiskfs/node-cache.c",
+            """  if (np->slot == NULL)
+    {""",
+            """  if (0)
+    {""",
+            "t_nodecache", ["readwait"],
+            why="a lookup hands out a node whose read failed while it waited"),
 ]
 
 

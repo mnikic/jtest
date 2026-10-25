@@ -44,6 +44,14 @@
    2. The node it made must be freed (diskfs_node_norefs is wrapped).
    3. A lookup of inode 13 reads it again, and finds it.
 
+   readwait: a lookup that waits for a node whose read then fails.
+   1. X's lookup of inode 13 is held in its read, its node in the cache
+      already.
+   2. Y looks inode 13 up, finds that node, and waits for its lock.
+   3. X's read fails.
+   Y must get inode 13 as it is on disk (it reads it again), or the
+   error, not the node that was never read.
+
    The scenario is the third argument; by default all run, each in a
    process of its own.  */
 
@@ -81,6 +89,57 @@ static int
 fail_inode_block (block_t b)
 {
   return b == fail_blk ? EIO : 0;
+}
+
+/* readwait: X's read is held, then fails once.  */
+static int rw_held, rw_go;
+
+static int
+hold_then_fail (block_t b)
+{
+  if (b != fail_blk || __atomic_exchange_n (&rw_held, 1, __ATOMIC_ACQ_REL))
+    return 0;
+  while (!__atomic_load_n (&rw_go, __ATOMIC_ACQUIRE))
+    usleep (1000);
+  return EIO;
+}
+
+static error_t rw_x_err;
+
+static void *
+rw_lookup_x (void *arg)
+{
+  struct node *np;
+  (void) arg;
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  rw_x_err = diskfs_cached_lookup (13, &np);
+  if (!rw_x_err)
+    diskfs_nput (np);
+  diskfs_journal_stop_transaction (txn);
+  return NULL;
+}
+
+static int y_found;
+static mode_t y_mode;
+static nlink_t y_nlink;
+static error_t y_rw_err;
+
+static void *
+rw_lookup_y (void *arg)
+{
+  struct node *np;
+  (void) arg;
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  y_rw_err = diskfs_cached_lookup (13, &np);
+  if (!y_rw_err)
+    {
+      y_mode = np->dn_stat.st_mode;
+      y_nlink = np->dn_stat.st_nlink;
+      diskfs_nput (np);
+    }
+  diskfs_journal_stop_transaction (txn);
+  __atomic_store_n (&y_found, 1, __ATOMIC_RELEASE);
+  return NULL;
 }
 
 struct node *__real_diskfs_make_node_alloc (size_t size);
@@ -257,6 +316,48 @@ readerr (void)
 }
 
 static int
+readwait (void)
+{
+  pthread_t x, y;
+
+  /* 1.  */
+  fail_blk = dino_block (13);
+  JT_SET_HOOK (jt_ref_fail_hook, hold_then_fail);
+  pthread_create (&x, NULL, rw_lookup_x, NULL);
+  while (!__atomic_load_n (&rw_held, __ATOMIC_ACQUIRE))
+    usleep (1000);
+
+  /* 2.  */
+  pthread_create (&y, NULL, rw_lookup_y, NULL);
+  usleep (200000);
+  CHECK (!__atomic_load_n (&y_found, __ATOMIC_ACQUIRE), "the second lookup "
+	 "did not wait for the node being read");
+
+  /* 3.  */
+  __atomic_store_n (&rw_go, 1, __ATOMIC_RELEASE);
+  for (int i = 0; i < 300 && !__atomic_load_n (&y_found, __ATOMIC_ACQUIRE);
+       i++)
+    usleep (10000);
+  if (!__atomic_load_n (&y_found, __ATOMIC_ACQUIRE))
+    stuck ("the second lookup did not finish");
+  pthread_join (x, NULL);
+  pthread_join (y, NULL);
+  JT_SET_HOOK (jt_ref_fail_hook, NULL);
+  CHECK (rw_x_err == EIO, "the lookup whose read failed: %s",
+	 strerror (rw_x_err));
+  CHECK (y_rw_err || (S_ISREG (y_mode) && (y_mode & 07777) == 0666
+		      && y_nlink == 1),
+	 "the second lookup got a node that was not read: mode %o, %u links",
+	 (unsigned) y_mode, (unsigned) y_nlink);
+
+  unsigned long warnings = jt_umount ();
+  printf ("t_nodecache: OK (readwait: the second lookup %s; %lu "
+	  "warnings)\n", y_rw_err ? strerror (y_rw_err)
+	  : "read the inode again", warnings);
+  return 0;
+}
+
+static int
 lastref (void)
 {
   struct node *np;
@@ -308,7 +409,7 @@ main (int argc, char **argv)
      asserts), so readerr is left out under it.  */
   static const char *const all[] = { "lastref", "lostrace",
 #ifndef __SANITIZE_THREAD__
-				     "readerr",
+				     "readerr", "readwait",
 #endif
 				     NULL };
   const char *one[] = { argc > 3 ? argv[3] : NULL, NULL };
@@ -326,7 +427,8 @@ main (int argc, char **argv)
 	  jt_inode_globals ();
 	  files_init ();
 	  exit (!strcmp (*modes, "lastref") ? lastref ()
-		: !strcmp (*modes, "lostrace") ? lostrace () : readerr ());
+		: !strcmp (*modes, "lostrace") ? lostrace ()
+		: !strcmp (*modes, "readerr") ? readerr () : readwait ());
 	}
       CHECK (waitpid (pid, &status, 0) == pid, "wait");
       if (!WIFEXITED (status) || WEXITSTATUS (status))
