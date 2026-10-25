@@ -10,7 +10,7 @@ JTEST = os.path.dirname (os.path.dirname (os.path.abspath (__file__)))
 
 # Tests that take no seed: one run is all there is.
 DETERMINISTIC = {"t_forget_race", "t_free_only", "t_late_edit", "t_logfmt",
-                 "t_fdir_renlock", "t_nodecache", "t_notify_race",
+                 "t_fdir_renlock", "t_fdir_dead", "t_nodecache", "t_notify_race",
                  "t_release_order",
                  "t_sweep_race"}
 
@@ -44,6 +44,10 @@ def workdir (path, build):
             os.symlink (src, os.path.join (path, "build", img))
 
 
+# The tests that rename directories.
+RENAMES = {"t_fdir_ren", "t_fdir_renlock", "t_fdir_dead"}
+
+
 def run (binary, test, seed, cwd, extra_args=(), env=None, timeout=1800,
          jobs=None):
     """Run TEST (BINARY) with SEED in CWD.  Returns (status, seconds); a
@@ -55,9 +59,13 @@ def run (binary, test, seed, cwd, extra_args=(), env=None, timeout=1800,
     # not just the first, in the log.  A fault on a file pager's mapping
     # waits for the page in the SIGSEGV handler (env/fpager.c), which is
     # not signal-safe, by design.
+    # Renames make a directory the parent of the one it was below, so
+    # TSan's lock order by mutex takes the node locks' parent-first order
+    # for an inversion; the watchdog sees a real deadlock there.
     e.setdefault ("TSAN_OPTIONS", "suppressions=%s halt_on_error=0 "
-                  "history_size=4 report_signal_unsafe=0"
-                  % os.path.join (JTEST, "tsan.supp"))
+                  "history_size=4 report_signal_unsafe=0%s"
+                  % (os.path.join (JTEST, "tsan.supp"),
+                     " detect_deadlocks=0" if test in RENAMES else ""))
     if jobs:
         e["JT_JOBS"] = str (jobs)
     args = [binary, os.path.join ("build", image_for (test)), str (seed)]

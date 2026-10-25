@@ -213,6 +213,16 @@ worker (void *arg)
   return NULL;
 }
 
+static void
+print_dirs (void)
+{
+  for (int d = 0; d <= NDIRS; d++)
+    fprintf (stderr, "t_fdir_ren: dirs[%d] = %p, inode %lu, last seen as "
+	     "%s in dirs[%d]\n", d, (void *) dirs[d],
+	     (unsigned long) dirs[d]->cache_id, d ? where_name[d] : "/",
+	     d ? where_dir[d] : 0);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -224,10 +234,10 @@ main (int argc, char **argv)
   jt_inode_globals ();
   files_init ();
   diskfs_root_node = root;
+  jt_deadlock_hook = print_dirs;
 
   dirs[0] = root;
   diskfs_nref (root);
-  pthread_mutex_unlock (&root->lock);
   for (int d = 0; d <= NDIRS; d++)
     {
       creds[d] = cred;
@@ -263,8 +273,12 @@ main (int argc, char **argv)
   for (int i = 0; i < NT; i++)
     pthread_join (t[i], NULL);
 
+  /* The last references can write the inodes: in a handle, as an RPC's
+     release is.  */
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
   for (int d = 0; d <= NDIRS; d++)
     diskfs_nrele (dirs[d]);
+  diskfs_journal_stop_transaction (txn);
   unsigned long warnings = jt_umount ();
   CHECK (warnings == 0, "%lu journal warnings", warnings);
   CHECK (jt_fp_stale_reads () == 0, "%lu stale file page-ins",

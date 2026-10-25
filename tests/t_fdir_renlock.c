@@ -13,7 +13,12 @@
    3. X renames C (in B) to the root's name A: diskfs_S_dir_rename,
       which locks B and the root, and looks A up, waiting for A.
    4. Y looks B up in A, which locks B.
-   Both must finish; the rename fails, as A is not empty.  */
+   Both must finish; the rename fails, as A is not empty.
+
+   With "up" as the third argument, X instead moves C up one level, to
+   A's name z (mv A/b/c A/z): diskfs_rename_dir locks the source's parent
+   B, then the target directory A, its parent.  Both must finish, and
+   the move succeed.  */
 
 #include <unistd.h>
 #include "files.h"
@@ -22,7 +27,8 @@
 static struct node *a, *b, *c;
 static struct peropen po_root, po_b;
 static struct protid cred_root, cred_b;
-static int x_done, y_done;
+static int x_done, y_done, up;
+static struct protid cred_a;
 static error_t x_err;
 
 static struct node *
@@ -46,7 +52,8 @@ static void *
 renamer (void *arg)
 {
   (void) arg;
-  x_err = diskfs_S_dir_rename (&cred_b, "c", &cred_root, "A", 0);
+  x_err = up ? diskfs_S_dir_rename (&cred_b, "c", &cred_a, "z", 0)
+    : diskfs_S_dir_rename (&cred_b, "c", &cred_root, "A", 0);
   __atomic_store_n (&x_done, 1, __ATOMIC_RELEASE);
   return NULL;
 }
@@ -74,9 +81,9 @@ main (int argc, char **argv)
 {
   const char *image = argc > 1 ? argv[1] : "build/balloc.img";
   static struct peropen po_a;
-  static struct protid cred_a;
   pthread_t x, y;
 
+  up = argc > 3 && !strcmp (argv[3], "up");
   jt_mount (image, 2, 0);
   jt_inode_globals ();
   files_init ();
@@ -120,11 +127,14 @@ main (int argc, char **argv)
     }
   pthread_join (x, NULL);
   pthread_join (y, NULL);
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
   diskfs_nrele (a);
   diskfs_nrele (b);
   diskfs_nrele (c);
+  diskfs_journal_stop_transaction (txn);
   unsigned long warnings = jt_umount ();
-  printf ("t_fdir_renlock: OK (the rename: %s; %lu warnings)\n",
-	  x_err ? strerror (x_err) : "done", warnings);
+  printf ("t_fdir_renlock: OK (%s: the rename: %s; %lu warnings)\n",
+	  up ? "up" : "onto an ancestor", x_err ? strerror (x_err) : "done",
+	  warnings);
   return 0;
 }
