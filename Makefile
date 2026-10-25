@@ -169,7 +169,8 @@ $(B)/btrace.o: env/btrace.c env/jtest.h | $(B)
 BTRACE_WRAPS = -Wl,--wrap=ext2_new_block -Wl,--wrap=ext2_free_blocks \
 	       -Wl,--wrap=journal_get_write_access_external \
 	       -Wl,--wrap=journal_mark_dirty_external \
-	       -Wl,--wrap=journal_release_access -Wl,--wrap=diskfs_truncate
+	       -Wl,--wrap=journal_release_access -Wl,--wrap=diskfs_truncate \
+	       -Wl,--wrap=diskfs_journal_start_transaction
 
 DIR_C ?= $(HURD)/ext2fs/dir.c
 # shim/dir: the Hurd's struct dirent, for dir.c only.

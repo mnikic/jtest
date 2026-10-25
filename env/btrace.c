@@ -1,5 +1,6 @@
-/* Link wraps for the directory tests that put the life of a block in
-   the trace: allocations, frees, and dir.c's calls into the journal.  */
+/* Link wraps for the directory tests: the life of a block in the trace
+   (allocations, frees, and dir.c's calls into the journal), and a place
+   for a test to hold a thread.  */
 
 #include <stdio.h>
 #include "jtest.h"
@@ -12,6 +13,15 @@ error_t __real_journal_get_write_access_external (diskfs_transaction_t *txn,
 error_t __real_journal_mark_dirty_external (diskfs_transaction_t *txn,
 					    block_t b, const void *data);
 void __real_journal_release_access (diskfs_transaction_t *txn, block_t b);
+diskfs_transaction_t *__real_diskfs_journal_start_transaction (void);
+
+/* A test can hold a thread at the start of a transaction
+   (t_fdir_renlock).  */
+__attribute__ ((weak)) diskfs_transaction_t *
+__wrap_diskfs_journal_start_transaction (void)
+{
+  return __real_diskfs_journal_start_transaction ();
+}
 
 block_t
 __wrap_ext2_new_block (block_t goal, block_t prealloc_goal,

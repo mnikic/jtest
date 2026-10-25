@@ -309,12 +309,20 @@ MUTANTS = [
             "t_nodecache", ["readerr"],
             why="a node whose read failed keeps the cache's reference"),
     Mutant ("nodecache-readwait", "libdiskfs/node-cache.c",
-            """  if (np->slot == NULL)
+            """  if (gone)
     {""",
             """  if (0)
     {""",
             "t_nodecache", ["readwait"],
             why="a lookup hands out a node whose read failed while it waited"),
+    Mutant ("nodecache-slot-unlocked", "libdiskfs/node-cache.c",
+            """  pthread_rwlock_rdlock (&nodecache_lock);
+  int gone = np->slot == NULL;
+  pthread_rwlock_unlock (&nodecache_lock);""",
+            """  int gone = np->slot == NULL;""",
+            "t_fdir_ren", san="thread",
+            why="the slot is read without nodecache_lock while the table "
+            "moves its entries (TSan)"),
     # Directory blocks through a file pager (t_fdir, env/fpager.c).
     Mutant ("dir-overlay-off", J,
             """  if (!err && journal && *read_amount > 0)
@@ -336,6 +344,35 @@ MUTANTS = [
     {""",
             "t_fdir",
             why="a page-out of an uncommitted directory block goes home"),
+    # libdiskfs's renames and entries (t_fdir_renlock, t_fdir_ren,
+    # t_fdir_dead).
+    Mutant ("rename-bottom-up", "libdiskfs/dir-renamed.c",
+            """  int tdp_above = fdp != tdp && in_chain (chain, nchain, tdp);""",
+            """  int tdp_above = 0;""",
+            "t_fdir_renlock",
+            why="a rename onto an ancestor of the source's parent locks it "
+            "after its descendant"),
+    Mutant ("rename-bottom-up-move", "libdiskfs/dir-renamed.c",
+            """  int tdp_above = fdp != tdp && in_chain (chain, nchain, tdp);""",
+            """  int tdp_above = 0;""",
+            "t_fdir_renlock", ["up"],
+            why="a move up locks the source's parent before its parent"),
+    Mutant ("rename-file-target-late", "libdiskfs/dir-renamed.c",
+            """      if (!err && tnp && (in_chain (chain, nchain, tnp)
+			  || !S_ISDIR (tnp->dn_stat.st_mode)))""",
+            """      if (!err && tnp && in_chain (chain, nchain, tnp))""",
+            "t_fdir_renlock", ["file"],
+            why="the source's parent is locked after a file target that can "
+            "be linked in it"),
+    Mutant ("direnter-dead-dir", "libdiskfs/direnter.c",
+            """  if (dp->dn_stat.st_nlink == 0)
+    {
+      diskfs_drop_dirstat (dp, ds);""",
+            """  if (0)
+    {
+      diskfs_drop_dirstat (dp, ds);""",
+            "t_fdir_dead",
+            why="a removed directory takes a new entry"),
     # The real dir.c (t_fdir_ops).
     Mutant ("dirblock-unjournaled", "ext2fs/dir.c",
             """  txn = journal_thread_transaction ();
