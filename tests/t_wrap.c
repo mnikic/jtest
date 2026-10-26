@@ -134,6 +134,8 @@ run (const char *image, unsigned seed)
       CHECK (!fseeko (f, (off_t) blocks[k] << log2_block_size, SEEK_SET)
 	     && fread (buf, block_size, 1, f) == 1, "read %s", img);
       long v = pattern_version (buf, blocks[k]);
+      if (v != h.ver[k])
+	jt_trace_dump (blocks[k]);
       CHECK (v == h.ver[k], "block %u: version %ld on disk, %u expected",
 	     blocks[k], v, h.ver[k]);
     }

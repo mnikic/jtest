@@ -267,6 +267,16 @@ MUTANTS = [
             "t_late_edit",
             why="the edit is not carried into the next transaction"),
     # Freed blocks given back in transaction order (e57b53ac9).
+    Mutant ("forget-no-flush-wait", J,
+            """	    if (jb->jb_is_flushing)
+	      {
+		/* A write of the old contents is in flight.""",
+            """	    if (0)
+	      {
+		/* A write of the old contents is in flight.""",
+            "t_forget_inflight",
+            why="a freed block goes back while its old contents are being "
+            "written home"),
     Mutant ("release-unordered", J,
             """  while (tid_gt (freed_tid, journal->j_released_tid + 1))
     JOURNAL_WAIT (&journal->j_commit_done, journal);""",

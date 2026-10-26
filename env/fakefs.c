@@ -223,6 +223,9 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
       int err = fail_hook (off, len, buf);
       if (err)
 	{
+	  for (size_t i = 0; i < len; i += block_size)
+	    jt_trace ((off + i) >> log2_block_size, "store write FAILED",
+		      (const char *) buf + i);
 	  /* Nothing reaches the disk.  */
 	  *amount = 0;
 	  return err;
@@ -240,6 +243,11 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
   pthread_mutex_lock (&log_lock);
   memcpy (store_mem + off, buf, len);
   log_append (off, buf, len);
+  /* Home writes in the trace, with what they wrote: a checkpoint's go
+     only through here.  */
+  for (size_t i = 0; i < len; i += block_size)
+    jt_trace ((off + i) >> log2_block_size, "store write",
+	      (const char *) buf + i);
   pthread_mutex_unlock (&log_lock);
   *amount = len;
   return 0;
@@ -537,7 +545,7 @@ jt_save_image (const char *path)
    it is stale.  An event's DATA is decoded as the tests' versions of the
    block's two halves.  */
 
-#define TRACE_LEN 65536
+#define TRACE_LEN 262144
 static struct
 {
   unsigned long n;
