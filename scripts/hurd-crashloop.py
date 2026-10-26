@@ -231,6 +231,12 @@ def main ():
         ap.error ("the workload uses {blob}: give --blob")
     if a.blob:
         a.blob = os.path.abspath (a.blob)
+        if not os.path.isfile (a.blob):
+            ap.error ("%s: no such file" % a.blob)
+        mnt = os.path.abspath (a.mnt).rstrip ("/") + "/"
+        if a.blob.startswith (mnt) or os.path.abspath (a.out).startswith (mnt):
+            ap.error ("--blob and --out must not be on the filesystem under "
+                      "test (%s)" % a.mnt)
     a.translator = os.path.abspath (a.translator)
     if not os.access (a.translator, os.X_OK):
         ap.error ("%s is not an executable" % a.translator)
