@@ -1542,6 +1542,18 @@ extern __thread struct disk_image_user *diskfs_exception_diu
 
 void (*jt_ref_hook) (block_t b);
 
+/* LeakSanitizer's built-in suppressions, in every test it runs in.
+   libdiskfs's name cache keeps a use count in the low two bits of each
+   name it strdup's (name-cache.c): a one-letter name's 2 bytes are then
+   pointed to only from past their end, which LeakSanitizer does not take
+   as a reference.  */
+const char *__lsan_default_suppressions (void);
+const char *
+__lsan_default_suppressions (void)
+{
+  return "leak:add_entry\n";
+}
+
 void *
 disk_cache_block_ref (block_t block)
 {
