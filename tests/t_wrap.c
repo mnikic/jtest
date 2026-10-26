@@ -17,7 +17,8 @@
 		  too, as when the disk goes bad then: the unmount's
 		  checkpoint fails, and leaves the journal dirty for a
 		  replay, which must bring every block's last version
-		  home.
+		  home.  If every committed block was home already, only
+		  the pages left dirty fail, and the journal is clean.
    By default all three run, each in a process of its own.  */
 
 #include <sys/wait.h>
@@ -29,7 +30,7 @@
 #define OPS 400
 
 static const char *mode;
-static int fail_armed, failed, umount_failures;
+static int fail_armed, failed, umount_failures, umount_journal_failures;
 static unsigned long matches, fail_at;
 static int umount_fail;
 
@@ -45,11 +46,17 @@ fail_hook (uint64_t off, size_t len, const void *buf)
     return 0;
   if (__atomic_add_fetch (&matches, 1, __ATOMIC_RELAXED) < fail_at)
     return 0;
-  /* At the unmount, they all fail.  */
+  /* At the unmount, they all fail.  A pager's, on a pager thread, can be
+     of a page left dirty whose block a checkpoint already wrote home;
+     only the journal's own home writes leave it something to replay.  */
   if (!umount_fail)
     __atomic_store_n (&failed, 1, __ATOMIC_RELEASE);
   else
-    __atomic_store_n (&umount_failures, 1, __ATOMIC_RELEASE);
+    {
+      __atomic_store_n (&umount_failures, 1, __ATOMIC_RELEASE);
+      if (!jt_on_pager_thread ())
+	__atomic_store_n (&umount_journal_failures, 1, __ATOMIC_RELEASE);
+    }
   return EIO;
 }
 
@@ -121,8 +128,12 @@ run (const char *image, unsigned seed)
   jt_save_image (img);
   if (umount_fail)
     {
-      CHECK (jt_journal_check () == JOURNAL_NEEDS_REPLAY, "the unmount's "
-	     "home writes failed, but the journal is clean");
+      /* With every committed block home before the unmount, only pages
+	 left dirty failed, and the journal is rightly clean: the check of
+	 the blocks below is what counts.  */
+      CHECK (!umount_journal_failures
+	     || jt_journal_check () == JOURNAL_NEEDS_REPLAY, "the unmount's "
+	     "checkpoint failed, but the journal is clean");
       CHECK (jt_run ("e2fsck -E journal_only -y %s >%s.fsck 2>&1", img, img)
 	     <= 1, "replay of %s", img);
     }
@@ -157,9 +168,12 @@ run (const char *image, unsigned seed)
   snprintf (name, sizeof name, strcmp (mode, "plain") ? "t_wrap-%s"
 	    : "t_wrap", mode);
   checked = jt_crash_check (name, history_check, &h);
-  printf ("t_wrap: OK (%s: %d operations, %zu writes, %.1f times round the "
-	  "log, %zu crash images)\n", mode, OPS, jt_log_count (),
-	  (double) log_writes / jblocks, checked);
+  printf ("t_wrap: OK (%s%s: %d operations, %zu writes, %.1f times round "
+	  "the log, %zu crash images)\n", mode,
+	  !umount_fail ? "" : umount_journal_failures
+	  ? ", the unmount's checkpoint failed"
+	  : ", only page-outs failed at the unmount",
+	  OPS, jt_log_count (), (double) log_writes / jblocks, checked);
   return 0;
 }
 
