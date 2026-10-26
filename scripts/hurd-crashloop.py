@@ -246,10 +246,21 @@ def main ():
             cleans += 1
         else:
             crashes += 1
+        if wstatus in (None, -9):
+            wnote = "still running"
+        else:
+            # It stopped by itself: say why, from its last line.
+            last = ""
+            try:
+                with open (os.path.join (rdir, "workload.txt"),
+                           errors="replace") as f:
+                    lines = [l.strip () for l in f if l.strip ()]
+                last = lines[-1] if lines else "no output"
+            except OSError:
+                pass
+            wnote = "had stopped (exit %s: %s)" % (wstatus, last[:120])
         log (a.out, "round %d: %s after %.1f s, workload %s: clean"
-             % (rnd, kind, delay,
-                "still running" if wstatus in (None, -9) else
-                "had stopped (exit %s)" % wstatus))
+             % (rnd, kind, delay, wnote))
 
     log (a.out, "done: %d rounds (%d kill -9, %d clean unmounts), all clean"
          % (rnd, crashes, cleans))
