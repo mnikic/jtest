@@ -7,6 +7,9 @@ Run as root inside the Hurd, on a filesystem made for it:
   python3 hurd-crashloop.py --dev DEVICE --mnt /mnt/crash \\
       --blob /root/blob.tar --hours 8
 
+--blob and --out are paths on the running system, and must not be under
+--mnt: that is the filesystem each round crashes.
+
 Each round:
   1. Starts the translator: settrans -ac MNT TRANSLATOR [ARGS] DEVICE,
      TRANSLATOR being --translator (default /hurd/ext2fs), for instance
@@ -192,7 +195,9 @@ def main ():
     ap.add_argument ("--dev", required=True,
                      help="the device or image file the filesystem is on")
     ap.add_argument ("--mnt", required=True, help="where to set it up")
-    ap.add_argument ("--blob", help="a tar file for the default workload")
+    ap.add_argument ("--blob", help="a tar file for the default workload: "
+                     "a path on this system, not under --mnt, which is the "
+                     "filesystem the rounds crash")
     ap.add_argument ("--cmd", action="append",
                      help="a workload command (repeatable); default: untar "
                      "the blob into d{n}, remove d{n-1}")
