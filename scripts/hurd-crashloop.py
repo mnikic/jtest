@@ -74,9 +74,17 @@ def write_wrapper (a):
     looking through /proc, whose reads can block on the Hurd."""
     a.pidfile = os.path.join (a.out, "translator.pid")
     a.wrapper = os.path.join (a.out, "translator.sh")
+    a.tlog = os.path.join (a.out, "translator.log")
+    # Its output to the log first, so that it never holds settrans' (or
+    # the script's) open, and a record of which binary ran.
     with open (a.wrapper, "w") as f:
-        f.write ("#!/bin/sh\necho $$ > %s\nexec %s \"$@\"\n"
-                 % (a.pidfile, a.translator))
+        f.write ("""#!/bin/sh
+exec >> %(log)s 2>&1
+echo "=== $(date '+%%Y-%%m-%%d %%H:%%M:%%S') pid $$: %(bin)s $*"
+echo "    md5 $(md5sum %(bin)s | cut -d' ' -f1)"
+echo $$ > %(pid)s
+exec %(bin)s "$@"
+""" % {"log": a.tlog, "bin": a.translator, "pid": a.pidfile})
     os.chmod (a.wrapper, 0o755)
 
 
@@ -104,19 +112,14 @@ def start_translator (a):
         pass
     cmd = ["settrans", "-ac", a.mnt, a.wrapper] + a.args + [a.dev]
     step (" ".join (cmd))
-    # Not through a pipe: the translator inherits settrans' output and
-    # keeps it open, so a pipe would never end.  Its messages, journal
-    # warnings among them, go to --out/translator.log.
-    with open (os.path.join (a.out, "translator.log"), "a") as tlog:
-        tlog.write (time.strftime ("--- %Y-%m-%d %H:%M:%S ") + " ".join (cmd)
-                    + "\n")
-        tlog.flush ()
+    # Not through a pipe, in case something settrans starts keeps it
+    # open; the translator itself writes to --out/translator.log.
+    with open (a.tlog, "a") as tlog:
         status = subprocess.run (cmd, stdin=subprocess.DEVNULL, stdout=tlog,
                                  stderr=subprocess.STDOUT).returncode
     if status:
         raise RuntimeError ("%s failed (exit %d); see %s"
-                            % (" ".join (cmd), status,
-                               os.path.join (a.out, "translator.log")))
+                            % (" ".join (cmd), status, a.tlog))
     pid = recorded_pid (a)
     step ("translator pid %s" % pid)
     if pid is None:
