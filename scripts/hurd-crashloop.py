@@ -8,7 +8,9 @@ Run as root inside the Hurd, on a filesystem made for it:
       --blob /root/blob.tar --hours 8
 
 Each round:
-  1. Starts the translator: settrans -ac MNT /hurd/ext2fs [ARGS] DEVICE.
+  1. Starts the translator: settrans -ac MNT TRANSLATOR [ARGS] DEVICE,
+     TRANSLATOR being --translator (default /hurd/ext2fs), for instance
+     a build's ext2fs.static.
   2. Runs the workload in MNT (by default: untar BLOB into a new
      directory, remove the one before, repeat), in its own process group.
   3. After a random delay (--min-kill to --max-kill seconds), kill -9's
@@ -77,7 +79,7 @@ def translator_pids (dev):
 
 def start_translator (a):
     os.makedirs (a.mnt, exist_ok=True)
-    cmd = ["settrans", "-ac", a.mnt, "/hurd/ext2fs"] + a.args + [a.dev]
+    cmd = ["settrans", "-ac", a.mnt, a.translator] + a.args + [a.dev]
     r = run (cmd)
     if r.returncode:
         raise RuntimeError ("%s: %s" % (" ".join (cmd), r.stdout.strip ()))
@@ -151,6 +153,9 @@ def main ():
     ap.add_argument ("--cmd", action="append",
                      help="a workload command (repeatable); default: untar "
                      "the blob into d{n}, remove d{n-1}")
+    ap.add_argument ("--translator", default="/hurd/ext2fs",
+                     help="the ext2fs to run (default /hurd/ext2fs), e.g. "
+                     "a build's ext2fs/ext2fs.static")
     ap.add_argument ("--args", default="",
                      help="extra ext2fs options, e.g. \"-s\" (one string)")
     ap.add_argument ("--min-kill", type=float, default=5,
@@ -179,12 +184,17 @@ def main ():
         ap.error ("the workload uses {blob}: give --blob")
     if a.blob:
         a.blob = os.path.abspath (a.blob)
+    a.translator = os.path.abspath (a.translator)
+    if not os.access (a.translator, os.X_OK):
+        ap.error ("%s is not an executable" % a.translator)
     if os.geteuid () != 0:
         ap.error ("run it as root")
     os.makedirs (a.out, exist_ok=True)
     rng = random.Random (a.seed)
     deadline = time.monotonic () + a.hours * 3600 if a.hours else None
 
+    log (a.out, "translator %s %s on %s" % (a.translator, " ".join (a.args),
+                                           a.dev))
     clear_mountpoint (a)
     if check (a, 0, a.out):
         log (a.out, "the filesystem is not clean to begin with: see "
