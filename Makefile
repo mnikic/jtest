@@ -227,9 +227,10 @@ $(B)/full.img: $(B)/balloc.img
 	rm -f $@.data
 	e2fsck -fn $@ >/dev/null
 
+# The images as scripts/common.py's image_for picks them.
 check: all
 	@for t in $(TESTS); do \
-	  case $$t in *t_balloc_full*|*t_balloc_lock*) img=$(B)/full.img;; *t_balloc*|*t_trunc*|*t_orphan*|*t_rwcycle*|*t_abortfiles*|*t_nodecache*|*t_fdir*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
+	  case $$t in *t_balloc_full*|*t_balloc_lock*|*t_fwrite_enospc*|*t_fdir_renfail*|*t_fdir_enospc*) img=$(B)/full.img;; *t_balloc*|*t_trunc*|*t_orphan*|*t_rwcycle*|*t_abortfiles*|*t_nodecache*|*t_fdir*) img=$(B)/balloc.img;; *) img=$(B)/base.img;; esac; \
 	  $$t $$img 2>$$t.log || { tail -40 $$t.log; echo "FAIL: $$t (log: $$t.log)"; exit 1; }; \
 	done
 

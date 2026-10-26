@@ -221,8 +221,11 @@ main (int argc, char **argv)
 	 "commit had to checkpoint for space");
 #endif
   checked = jt_crash_check (T_NAME, check, NULL);
-  printf (T_NAME ": OK (%d threads x %d operations of %d blocks, %lu "
+  char forced[32] = "unknown";
+  if (jt_forced_checkpoints () != JT_UNKNOWN)
+    snprintf (forced, sizeof forced, "%lu", jt_forced_checkpoints ());
+  printf (T_NAME ": OK (%d threads x %d operations of %d blocks, %s "
 	  "forced checkpoints, %zu writes, %zu crash images)\n", NT, ops, K,
-	  jt_forced_checkpoints (), jt_log_count (), checked);
+	  forced, jt_log_count (), checked);
   return 0;
 }
