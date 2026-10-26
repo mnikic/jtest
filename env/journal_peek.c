@@ -26,7 +26,12 @@ claims_in (diskfs_transaction_t *txn)
 unsigned long
 jt_forced_checkpoints (void)
 {
+#ifdef JRNL_STAT_GET
   return JRNL_STAT_GET (journal_stat_forced_checkpoints);
+#else
+  /* A tree without the journal's counters.  */
+  return JT_UNKNOWN;
+#endif
 }
 
 uint32_t

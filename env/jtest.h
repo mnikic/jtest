@@ -288,6 +288,9 @@ long jt_flush_claims (void);
    to the allocator (with all before it).  */
 uint32_t jt_txn_tid (diskfs_transaction_t *txn);
 /* How many commits had to checkpoint to make room in the log.  */
+/* The checkpoints a commit forced, or JT_UNKNOWN in a tree without the
+   journal's counters.  */
+#define JT_UNKNOWN ((unsigned long) -1)
 unsigned long jt_forced_checkpoints (void);
 uint32_t jt_released_tid (void);
 

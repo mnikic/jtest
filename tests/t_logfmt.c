@@ -487,6 +487,9 @@ run_oversize (const char *image)
       static block_t blocks[BIG];
       close (fds[0]);
       CHECK (freopen (log, "w", stderr), "%s", log);
+      /* As stderr is, unbuffered: the abort below must not lose what
+	 was written before it.  */
+      setvbuf (stderr, NULL, _IONBF, 0);
       jt_mount (image, 2, 0);
       pick_free_blocks (blocks, BIG);
       JT_SET_HOOK (jt_store_write_hook, oversize_hook);

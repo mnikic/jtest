@@ -242,6 +242,9 @@ MUTANTS = [
 	    journal_clear_flushing_locked (b + actual_blocks,
 					   flush_count - actual_blocks);""",
             "t_ioerr", ["pager-run"],
+            # Caught by its deadlock: a run reaches the unmount in about
+            # 3 seconds, so the watchdog need not wait 300.
+            env={"JT_WATCHDOG": "20"},
             why="a failed write of several blocks keeps its claims"),
     Mutant ("quiesce-ignores-error", J,
             """  if (io_error)

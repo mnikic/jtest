@@ -216,6 +216,7 @@ main (int argc, char **argv)
   CHECK (jt_stale_reads () == 0, "%lu stale page-ins", jt_stale_reads ());
 
 #ifdef T_PRESSURE
+  /* Unknown in a tree without the journal's counters.  */
   CHECK (jt_forced_checkpoints () > 0, "the log never filled up: no "
 	 "commit had to checkpoint for space");
 #endif
