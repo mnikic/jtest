@@ -70,8 +70,21 @@ struct statfs
   unsigned int f_spare[3];
 };
 
-/* The Hurd's static initializer: x86-64 glibc's spin lock is unlocked at
-   1 (it locks with lock decl).  */
+/* The Hurd's static initializer, for the host glibc's spin lock: on x86
+   it is unlocked at 1 (it locks with lock decl), elsewhere, aarch64
+   included, at 0 (pthread_spin_init's value).  */
+#if defined (__x86_64__) || defined (__i386__)
 #define PTHREAD_SPINLOCK_INITIALIZER 1
+#else
+#define PTHREAD_SPINLOCK_INITIALIZER 0
+#endif
+
+/* A Hurd error code (inode.c's diskfs_get_translator).  Recent Linux
+   headers define it too, with this value; older ones, Ubuntu's for
+   instance, do not.  */
+#include <errno.h>
+#ifndef EFTYPE
+#define EFTYPE 134
+#endif
 
 #endif

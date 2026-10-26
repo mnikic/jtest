@@ -1944,6 +1944,11 @@ jt_mount (const char *image, int npagers, int flags)
   block_t nblocks;
 
   jt_flags = flags;
+  /* The pagers protect and fault one 4096-byte block at a time.  */
+  if (sysconf (_SC_PAGESIZE) != (long) vm_page_size)
+    _ext2_panic (__func__, "the host's pages are %ld bytes; the harness "
+		 "needs %lu (a kernel with 4K pages)", sysconf (_SC_PAGESIZE),
+		 (unsigned long) vm_page_size);
   /* JT_SYNCHRONOUS: a synchronous mount (-s), as diskfs_synchronous
      makes it: every RPC commits, and alloc_sync writes a node's indirect
      blocks out at once.  */
