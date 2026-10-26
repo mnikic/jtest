@@ -124,25 +124,29 @@ scan_descriptors (size_t from, const block_t *blocks, int n, long *flags)
 static block_t x_blk;
 static size_t x_synced[8];
 static int x_nver;
-static enum { HOOK_NONE, HOOK_READ, HOOK_EVICT } x_hook;
+enum { HOOK_NONE, HOOK_READ, HOOK_EVICT };
+/* Set by the test, cleared by the hook; kjournald's writes go through the
+   hook too.  X_NVER is read only once it is set.  */
+static int x_hook;
 
 /* While the commit writes X's escaped copy of version x_nver.  */
 static void
 escape_hook (uint64_t off, size_t len, const void *buf)
 {
   const uint32_t *w = buf;
+  int hook = __atomic_load_n (&x_hook, __ATOMIC_ACQUIRE);
 
-  if (x_hook == HOOK_NONE || !jt_in_journal (off) || len != block_size
+  if (hook == HOOK_NONE || !jt_in_journal (off) || len != block_size
       || w[0] != 0 || w[1] != (uint32_t) x_nver || w[2] != x_blk)
     return;
-  if (x_hook == HOOK_READ)
+  if (hook == HOOK_READ)
     {
       static char got[4096];
       jt_read (x_blk, got);
     }
   else
     jt_pageout (x_blk, 1, 1);
-  x_hook = HOOK_NONE;
+  __atomic_store_n (&x_hook, HOOK_NONE, __ATOMIC_RELEASE);
 }
 
 static const char *
@@ -194,14 +198,15 @@ run_escape (const char *image)
 	  /* Handed to the journal and gone: a read during the commit
 	     gets the shadow.  */
 	  jt_pageout (x_blk, 1, 1);
-	  x_hook = HOOK_READ;
+	  __atomic_store_n (&x_hook, HOOK_READ, __ATOMIC_RELEASE);
 	}
       else if (x_nver % 3 == 0)
 	/* Still dirty: evicted during the commit.  */
-	x_hook = HOOK_EVICT;
+	__atomic_store_n (&x_hook, HOOK_EVICT, __ATOMIC_RELEASE);
       CHECK (!jt_commit (txn), "commit");
       x_synced[x_nver] = jt_log_count ();
-      CHECK (x_hook == HOOK_NONE, "the commit wrote no escaped copy of "
+      CHECK (__atomic_load_n (&x_hook, __ATOMIC_ACQUIRE) == HOOK_NONE,
+	     "the commit wrote no escaped copy of "
 	     "version %d", x_nver);
 
       CHECK (scan_descriptors (mark, &x_blk, 1, &flags) >= 1
