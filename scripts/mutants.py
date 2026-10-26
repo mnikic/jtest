@@ -34,10 +34,13 @@ HURD = os.path.abspath (os.environ.get ("HURD") or
 
 class Mutant:
     def __init__ (self, name, path, old, new, test, args=(), env=None,
-                  min_caught=1, why="", san=None):
+                  min_caught=1, why="", san=None, seeds=None):
         self.name, self.path, self.old, self.new = name, path, old, new
         self.test, self.args, self.env = test, list (args), env or {}
         self.min_caught, self.why, self.san = min_caught, why, san
+        # Seeds for one caught only by chance, as a race TSan must see:
+        # tried until it is caught, at most this many.
+        self.seeds = seeds
 
 
 J = "ext2fs/journal.c"
@@ -365,7 +368,9 @@ MUTANTS = [
   int gone = np->slot == NULL;
   pthread_rwlock_unlock (&nodecache_lock);""",
             """  int gone = np->slot == NULL;""",
-            "t_fdir_ren", san="thread",
+            "t_fdir_ren", san="thread", seeds=10,
+            # TSan sees the race in about 3 runs of 5 here, fewer on
+            # aarch64, where 3 seeds missed it.
             why="the slot is read without nodecache_lock while the table "
             "moves its entries (TSan)"),
     # Directory blocks through a file pager (t_fdir, env/fpager.c).
@@ -604,7 +609,8 @@ def run_mutant (m, a, jobs):
     if subprocess.run (make, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL).returncode:
         return m, None, "the build failed"
-    seeds = [1] if m.test in common.DETERMINISTIC else range (1, a.seeds + 1)
+    seeds = [1] if m.test in common.DETERMINISTIC \
+        else range (1, (m.seeds or a.seeds) + 1)
     env = dict (m.env, JT_CRASH_POINTS=str (a.points))
     caught, line = 0, ""
     for seed in seeds:
@@ -616,6 +622,9 @@ def run_mutant (m, a, jobs):
             caught += 1
             line = line or common.failure_line (cwd) or (
                 "timeout" if status is None else "exit %d" % status)
+            if m.seeds and caught >= m.min_caught:
+                seeds = range (1, seed + 1)
+                break
     if caught >= min (m.min_caught, len (seeds)):
         shutil.rmtree (base, ignore_errors=True)
     return m, (caught, len (seeds)), line
