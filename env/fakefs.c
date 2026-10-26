@@ -203,6 +203,67 @@ log_append (uint64_t off, const void *data, size_t len)
   log_entries[log_n++] = (struct jt_write) { off, len, copy };
 }
 
+static void gdb_backtraces (void);
+
+/* The journal superblock's s_start, as the disk has it: where a replay
+   starts, 0 for an empty log.  DISK_LOG_LIVE: whether the block there
+   holds what the replay needs.  It does not yet when the superblock was
+   written with the log empty up to it: everything older home, and the
+   next transaction to be written there.  LAST_LOG_BLOCK: the log block
+   written last.  */
+static uint32_t disk_log_start, last_log_block;
+static int disk_log_live;
+
+/* Log writes advance one block at a time, round the log: the first that
+   overwrites a block a replay still needs lands on the tail the disk
+   has.  The journal must write a superblock with a later tail first.
+   Called with log_lock held, before the write.  */
+static void
+check_log_tail (uint64_t off, const void *buf, size_t len)
+{
+  if (!in_journal)
+    return;
+  for (size_t i = 0; i < len; i += block_size)
+    {
+      uint64_t o = off + i;
+      if (!in_journal[o >> log2_block_size])
+	continue;
+      long idx = jt_journal_index (o);
+      const uint32_t *d = (const uint32_t *) ((const char *) buf + i);
+      if (idx == 0)
+	{
+	  if (be32toh (d[0]) == JBD2_MAGIC_NUMBER
+	      && (be32toh (d[1]) == JBD2_SUPERBLOCK_V1
+		  || be32toh (d[1]) == JBD2_SUPERBLOCK_V2))
+	    {
+	      const journal_superblock_t *sb
+		= (const journal_superblock_t *) d;
+	      uint32_t first = be32toh (sb->s_first);
+	      uint32_t last = be32toh (sb->s_maxlen) - 1;
+	      uint32_t next = last_log_block >= last || !last_log_block
+		? first : last_log_block + 1;
+	      disk_log_start = be32toh (sb->s_start);
+	      disk_log_live = disk_log_start && disk_log_start != next;
+	    }
+	  continue;
+	}
+      if (disk_log_start && (uint32_t) idx == disk_log_start
+	  && !disk_log_live)
+	disk_log_live = 1;
+      else if (disk_log_start && (uint32_t) idx == disk_log_start)
+	{
+	  fprintf (stderr, "jtest: the writes before it:\n");
+	  jt_dump_log (stderr, log_n > 60 ? log_n - 60 : 0, log_n);
+	  jt_journal_state (stderr);
+	  gdb_backtraces ();
+	  _ext2_panic (__func__, "log block %ld written over the start of the "
+		     "log on disk (s_start %u), which a replay still needs; "
+		     "write %zu", idx, disk_log_start, log_n);
+	}
+      last_log_block = idx;
+    }
+}
+
 error_t
 store_write (struct store *s, store_offset_t addr, const void *buf,
 	     size_t len, size_t *amount)
@@ -241,6 +302,7 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
       usleep (rand_r (&seed) % write_delay_us);
     }
   pthread_mutex_lock (&log_lock);
+  check_log_tail (off, buf, len);
   memcpy (store_mem + off, buf, len);
   log_append (off, buf, len);
   /* Home writes in the trace, with what they wrote: a checkpoint's go
@@ -1899,6 +1961,25 @@ load_image (const char *path)
    set its own SIGALRM handler and alarm after jt_mount.  */
 void (*jt_deadlock_hook) (void);
 
+/* With JT_WATCHDOG_GDB, every thread's backtrace, from gdb.  */
+static void
+gdb_backtraces (void)
+{
+  const char *more = getenv ("JT_WATCHDOG_GDB");
+
+  if (!more)
+    return;
+  prctl (PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+  /* JT_WATCHDOG_GDB other than 1: more gdb commands, as -ex
+     arguments.  */
+  char cmd[1024];
+  snprintf (cmd, sizeof cmd, "gdb -p %d -batch -ex 'thread apply all "
+	    "bt 16' %s </dev/null >&2 2>&1", (int) getpid (),
+	    strcmp (more, "1") ? more : "");
+  if (system (cmd) < 0)
+    _exit (3);
+}
+
 static void
 watchdog (int sig)
 {
@@ -1909,21 +1990,8 @@ watchdog (int sig)
     _exit (3);
   if (jt_deadlock_hook)
     jt_deadlock_hook ();
-  /* With JT_WATCHDOG_GDB, every thread's backtrace first.  Not
-     async-signal-safe, but the process is stuck anyway.  */
-  if (getenv ("JT_WATCHDOG_GDB"))
-    {
-      prctl (PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
-      /* JT_WATCHDOG_GDB other than 1: more gdb commands, as -ex
-	 arguments.  */
-      const char *more = getenv ("JT_WATCHDOG_GDB");
-      char cmd[1024];
-      snprintf (cmd, sizeof cmd, "gdb -p %d -batch -ex 'thread apply all "
-		"bt 16' %s </dev/null >&2 2>&1", (int) getpid (),
-		strcmp (more, "1") ? more : "");
-      if (system (cmd) < 0)
-	_exit (3);
-    }
+  /* Not async-signal-safe, but the process is stuck anyway.  */
+  gdb_backtraces ();
   _exit (3);
 }
 
@@ -1956,6 +2024,10 @@ jt_mount (const char *image, int npagers, int flags)
   block_t nblocks;
 
   jt_flags = flags;
+  /* The log is empty: a journal that needs a replay is refused below.  */
+  disk_log_start = 0;
+  disk_log_live = 0;
+  last_log_block = 0;
   /* The pagers protect and fault one 4096-byte block at a time.  */
   if (sysconf (_SC_PAGESIZE) != (long) vm_page_size)
     _ext2_panic (__func__, "the host's pages are %ld bytes; the harness "

@@ -118,3 +118,40 @@ jt_checkpoint_unwritten (block_t b)
   JOURNAL_UNLOCK (ext2_journal);
   return unwritten;
 }
+
+static void
+txn_state (FILE *f, const char *what, diskfs_transaction_t *t)
+{
+  fprintf (f, "  %s tid %u: log start %u, state %d, %zu blocks, "
+	   "%u outstanding\n", what, t->t_tid, t->t_log_start,
+	   (int) t->t_state, t->t_buffer_map.size, t->t_outstanding_io);
+}
+
+/* What the journal thinks of its log, for a report.  Read without the
+   journal's lock, which the caller may hold: the values can be torn.  */
+void
+jt_journal_state (FILE *f)
+{
+  journal_t *j = ext2_journal;
+
+  if (!j)
+    {
+      fprintf (f, "jtest: no journal\n");
+      return;
+    }
+  fprintf (f, "jtest: journal: head %u, tail %u, on disk %u, free %u "
+	   "(log %u-%u), next tid %u, checkpointing %d, tail writing %d\n",
+	   j->j_head, j->j_tail, j->j_disk_tail, j->j_free, j->j_first,
+	   j->j_last, j->j_transaction_sequence, j->j_checkpointing,
+	   j->j_tail_writing);
+  for (diskfs_transaction_t *t = j->j_checkpoint_list; t;
+       t = t->t_checkpoint_next)
+    txn_state (f, "checkpoint", t);
+  for (diskfs_transaction_t *t = j->j_retired_list; t;
+       t = t->t_checkpoint_next)
+    txn_state (f, "retired", t);
+  if (j->j_committing_transaction)
+    txn_state (f, "committing", j->j_committing_transaction);
+  if (j->j_running_transaction)
+    txn_state (f, "running", j->j_running_transaction);
+}

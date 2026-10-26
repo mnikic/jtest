@@ -223,6 +223,9 @@ const void *jt_write_block (const struct jt_write *w, block_t b);
    headers, descriptor tags) and home writes (their first two words, which
    for the tests' blocks are the block number and version).  */
 void jt_dump_log (FILE *f, size_t from, size_t to);
+/* The journal's view of its log: head, tail, free space and its
+   transactions, for a report.  */
+void jt_journal_state (FILE *f);
 
 /* Write the image as it was after the first N log entries to PATH: the
    image as loaded plus those writes.  With TORN, the Nth write only
