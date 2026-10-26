@@ -361,7 +361,7 @@ MUTANTS = [
             why="a page-out of an uncommitted directory block goes home"),
     # io_write on a full disk (t_fwrite_enospc).
     Mutant ("enospc-no-retry", J,
-            """  if (*retries >= 3 || ext2_busy_blocks () == 0)
+            """  if (*retries >= 3 || ext2_free_blocks_now () == 0)
     return 0;""",
             """  if (1)
     return 0;""",

@@ -338,7 +338,9 @@ main (int argc, char **argv)
   jt_mount (image, 3, 0);
   jt_inode_globals ();
   files_init ();
-  /* The image's root has two files already.  */
+  /* The image's root has two files already.  In a handle, as an RPC's
+     lookup is: on a synchronous mount it writes the root's inode.  */
+  diskfs_transaction_t *setup_txn = diskfs_journal_start_transaction ();
   pthread_mutex_lock (&root->lock);
   for (int i = 0; i < 2; i++)
     {
@@ -350,6 +352,7 @@ main (int argc, char **argv)
       diskfs_nput (np);
     }
   pthread_mutex_unlock (&root->lock);
+  diskfs_journal_stop_transaction (setup_txn);
   snaps = calloc (NT * OPS + 1, sizeof *snaps);
   synced = calloc (NT * OPS + 1, sizeof *synced);
   op_done (1);
@@ -369,9 +372,11 @@ main (int argc, char **argv)
   for (int i = 0; i < NT; i++)
     pthread_join (t[i], NULL);
   unsigned long syncs = psync ? jt_periodic_sync_stop () : 0;
+  diskfs_transaction_t *check_txn = diskfs_journal_start_transaction ();
   pthread_mutex_lock (&root->lock);
   op_check ();
   pthread_mutex_unlock (&root->lock);
+  diskfs_journal_stop_transaction (check_txn);
 
   unsigned long warnings = jt_umount ();
   CHECK (warnings == 0, "%lu journal warnings", warnings);

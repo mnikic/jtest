@@ -854,8 +854,14 @@ held_fault (int sig, siginfo_t *si, void *ctx)
 	  return;		/* The write is retried.  */
 	}
     }
-  /* A real fault: let it kill us.  */
-  signal (sig, SIG_DFL);
+  /* A real fault: say where, and abort, so that a debugger stops here
+     with the faulting frame below the handler's.  */
+  static const char msg[] = "jtest: a fault outside the harness's "
+    "mappings (SIGSEGV)\n";
+  (void) sig;
+  if (write (2, msg, sizeof msg - 1) < 0)
+    _exit (3);
+  abort ();
 }
 
 /* Like libpager's data-return: writes of a block are serialized, and a
@@ -1624,9 +1630,9 @@ ext2_release_busy_blocks (block_t block, unsigned long count)
 }
 
 /* Weak: balloc.c's, where it is linked in; without it, no block is
-   busy.  */
+   free for a retry to wait for.  */
 __attribute__ ((weak)) unsigned long
-ext2_busy_blocks (void)
+ext2_free_blocks_now (void)
 {
   return 0;
 }
@@ -1886,6 +1892,11 @@ jt_mount (const char *image, int npagers, int flags)
   block_t nblocks;
 
   jt_flags = flags;
+  /* JT_SYNCHRONOUS: a synchronous mount (-s), as diskfs_synchronous
+     makes it: every RPC commits, and alloc_sync writes a node's indirect
+     blocks out at once.  */
+  if (getenv ("JT_SYNCHRONOUS"))
+    diskfs_synchronous = 1;
   /* Reports reach a log even if the watchdog ends the test.  */
   setvbuf (stdout, NULL, _IOLBF, 0);
   signal (SIGALRM, watchdog);

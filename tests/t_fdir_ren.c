@@ -135,9 +135,12 @@ op_unlink (int d, const char *name)
 static void
 op_rename (int fd, const char *fromname, int td, const char *toname)
 {
-  /* Count the directory renames: look at what FROMNAME is.  */
+  /* Count the directory renames: look at what FROMNAME is, in a handle
+     as an RPC's lookup is (on a synchronous mount it writes the
+     directory's inode).  */
   struct node *np;
   int isdir = 0;
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
   pthread_mutex_lock (&dirs[fd]->lock);
   if (!diskfs_lookup (dirs[fd], (char *) fromname, LOOKUP, &np, NULL, &creds[fd]))
     {
@@ -145,6 +148,7 @@ op_rename (int fd, const char *fromname, int td, const char *toname)
       diskfs_nput (np);
     }
   pthread_mutex_unlock (&dirs[fd]->lock);
+  diskfs_journal_stop_transaction (txn);
 
   error_t err = diskfs_S_dir_rename (&creds[fd], fromname, &creds[td],
 				     toname, 0);
@@ -173,10 +177,12 @@ static void
 op_link (int fd, const char *fromname, int td, const char *toname)
 {
   struct node *np;
+  diskfs_transaction_t *ltxn = diskfs_journal_start_transaction ();
   pthread_mutex_lock (&dirs[fd]->lock);
   error_t err = diskfs_lookup (dirs[fd], (char *) fromname, LOOKUP, &np,
 			       NULL, &creds[fd]);
   pthread_mutex_unlock (&dirs[fd]->lock);
+  diskfs_journal_stop_transaction (ltxn);
   if (err)
     return;
   int file = S_ISREG (np->dn_stat.st_mode);
@@ -245,9 +251,11 @@ worker (void *arg)
 	{
 	  int c = rand_r (&seed) % (NDIRS + 1);
 	  name_of (a, rand_r (&seed) % NNAMES);
+	  diskfs_transaction_t *ctxn = diskfs_journal_start_transaction ();
 	  pthread_mutex_lock (&dirs[c]->lock);
 	  const char *wrong = nc_check (dirs[c], a, &creds[c]);
 	  pthread_mutex_unlock (&dirs[c]->lock);
+	  diskfs_journal_stop_transaction (ctxn);
 	  CHECK (!wrong, "%s", wrong);
 	}
       for (int x = rand_r (&seed) % 3; x > 0; x--)
@@ -332,6 +340,7 @@ main (int argc, char **argv)
   unsigned long syncs = psync ? jt_periodic_sync_stop () : 0;
 
   /* The name cache, with nothing running.  */
+  diskfs_transaction_t *ctxn = diskfs_journal_start_transaction ();
   for (int d = 0; d <= NDIRS; d++)
     {
       char n[16];
@@ -347,6 +356,7 @@ main (int argc, char **argv)
 	}
       pthread_mutex_unlock (&dirs[d]->lock);
     }
+  diskfs_journal_stop_transaction (ctxn);
 
   /* The last references can write the inodes: in a handle, as an RPC's
      release is.  */
