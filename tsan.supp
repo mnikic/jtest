@@ -16,3 +16,12 @@ race:journal_stop_transaction_locked
 # reading: two page-outs of one file race on the hint.  Older than the
 # journal; the cost is a worse allocation goal.  Found by t_fdir.
 race:ext2_getblk
+
+# libdiskfs sets diskfs_readonly with a plain write while the protid RPCs
+# are inhibited (readonly.c), and kjournald, which is not an RPC thread,
+# reads it to skip commits once the filesystem is read-only.  One that
+# misses the switch finds the running transaction empty, as the switch's
+# sync committed it, and diskfs_readonly_changed then stops the journal
+# under its lock.  t_rwcycle does what diskfs_set_readonly does; TSan saw
+# it on aarch64 only.
+race:diskfs_readonly
