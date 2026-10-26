@@ -58,18 +58,40 @@ def run (cmd, **kw):
                            stderr=subprocess.STDOUT, text=True, **kw)
 
 
+VERBOSE = False
+
+
+def step (msg):
+    """With --verbose, say what comes next, so that a hang shows where."""
+    if VERBOSE:
+        print (time.strftime ("%H:%M:%S ") + "  " + msg, flush=True)
+
+
+def read_cmdline (pid):
+    """PID's command line from /proc (the Hurd's procfs), or None.  The
+    read goes through the proc server and can block on a task that does
+    not answer, so it is bounded."""
+    try:
+        r = subprocess.run (["cat", "/proc/%s/cmdline" % pid],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, timeout=5)
+    except subprocess.TimeoutExpired:
+        step ("no answer for /proc/%s/cmdline; skipped" % pid)
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
 def translator_pids (dev):
-    """Pids of the ext2fs processes whose command line names DEV, from
-    /proc (the Hurd's procfs)."""
+    """Pids of the ext2fs processes whose command line names DEV."""
     pids = []
+    me = os.getpid ()
     for name in os.listdir ("/proc"):
-        if not name.isdigit ():
+        if not name.isdigit () or int (name) == me:
             continue
-        try:
-            with open ("/proc/%s/cmdline" % name, "rb") as f:
-                args = f.read ().split (b"\0")
-        except OSError:
+        raw = read_cmdline (name)
+        if raw is None:
             continue
+        args = raw.split (b"\0")
         args = [a.decode (errors="replace") for a in args if a]
         if (args and os.path.basename (args[0]).startswith ("ext2fs")
                 and dev in args[1:]):
@@ -80,10 +102,13 @@ def translator_pids (dev):
 def start_translator (a):
     os.makedirs (a.mnt, exist_ok=True)
     cmd = ["settrans", "-ac", a.mnt, a.translator] + a.args + [a.dev]
+    step (" ".join (cmd))
     r = run (cmd)
     if r.returncode:
         raise RuntimeError ("%s: %s" % (" ".join (cmd), r.stdout.strip ()))
+    step ("looking for the translator's pid in /proc")
     pids = translator_pids (a.dev)
+    step ("translator pid %s" % pids)
     if len (pids) != 1:
         raise RuntimeError ("expected one ext2fs on %s, found %s"
                             % (a.dev, pids))
@@ -93,6 +118,7 @@ def start_translator (a):
 def clear_mountpoint (a):
     """Take whatever is left of the active translator off MNT: a dead one
     after a kill, or a live one left over from an earlier run."""
+    step ("clearing %s" % a.mnt)
     run (["settrans", "-fga", a.mnt])
     run (["settrans", "-a", a.mnt])
     if not translator_pids (a.dev):
@@ -130,6 +156,7 @@ def stop_workload (p):
 def check (a, rnd, rdir):
     """Replay, then check read-only.  Returns None if clean, or what is
     wrong."""
+    step ("e2fsck of %s" % a.dev)
     r1 = run (["e2fsck", "-E", "journal_only", "-y", a.dev])
     r2 = run (["e2fsck", "-fn", a.dev])
     with open (os.path.join (rdir, "fsck.txt"), "w") as f:
@@ -176,7 +203,11 @@ def main ():
                      help="with a file as --dev, keep a copy of a crash "
                      "image that fails")
     ap.add_argument ("--seed", type=int, help="for the kill delays")
+    ap.add_argument ("--verbose", action="store_true",
+                     help="say each step before it runs")
     a = ap.parse_args ()
+    global VERBOSE
+    VERBOSE = a.verbose
 
     a.args = a.args.split ()
     a.cmd = a.cmd or DEFAULT_CMDS
@@ -217,6 +248,7 @@ def main ():
 
         pid = start_translator (a)
         with open (os.path.join (rdir, "workload.txt"), "w") as wlog:
+            step ("workload started; the kill in %.1f s" % delay)
             w = start_workload (a, wlog)
             time.sleep (delay)
             if clean:
