@@ -68,6 +68,9 @@ def run (binary, test, seed, cwd, extra_args=(), env=None, timeout=1800,
                   "history_size=4 report_signal_unsafe=0%s"
                   % (os.path.join (JTEST, "tsan.supp"),
                      " detect_deadlocks=0" if test in RENAMES else ""))
+    # Under UBSan: a report fails the test, instead of being printed and
+    # passed over.
+    e.setdefault ("UBSAN_OPTIONS", "halt_on_error=1 print_stacktrace=1")
     if jobs:
         e["JT_JOBS"] = str (jobs)
     args = [binary, os.path.join ("build", image_for (test)), str (seed)]
