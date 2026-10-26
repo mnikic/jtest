@@ -21,6 +21,11 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <stdint.h>
+#include <ucontext.h>
+#ifdef __aarch64__
+#include <asm/sigcontext.h>
+#endif
 #include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
@@ -429,6 +434,27 @@ fault (struct fpager *fp, size_t page, int write)
   return err;
 }
 
+/* Whether the fault in UCTX was a write.  */
+static int
+fault_is_write (void *uctx)
+{
+#if defined (__x86_64__) || defined (__i386__)
+  /* Bit 1 of the page fault error code is set for a write.  */
+  return (((ucontext_t *) uctx)->uc_mcontext.gregs[REG_ERR] & 2) != 0;
+#elif defined (__aarch64__)
+  /* WnR, bit 6 of the data abort's syndrome, which Linux puts in the
+     signal frame as an esr_context record.  */
+  struct _aarch64_ctx *h = (struct _aarch64_ctx *)
+    ((ucontext_t *) uctx)->uc_mcontext.__reserved;
+  for (; h->magic; h = (struct _aarch64_ctx *) ((char *) h + h->size))
+    if (h->magic == ESR_MAGIC)
+      return (((struct esr_context *) h)->esr >> 6) & 1;
+  return 1;
+#else
+#error "fault_is_write: unknown architecture"
+#endif
+}
+
 static int
 fp_fault_hook (void *addr, void *uctx)
 {
@@ -451,8 +477,7 @@ fp_fault_hook (void *addr, void *uctx)
   if (!fp)
     return 0;
 
-  /* x86: bit 1 of the page fault error code is set for a write.  */
-  int write = (((ucontext_t *) uctx)->uc_mcontext.gregs[REG_ERR] & 2) != 0;
+  int write = fault_is_write (uctx);
   if (write && !(maxprot & PROT_WRITE))
     return 0;			/* A real fault.  */
   error_t err = fault (fp, off >> log2_block_size, write);
