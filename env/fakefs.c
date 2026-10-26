@@ -678,6 +678,7 @@ struct req
   void (*fn) (void *);		/* REQ_CALL.  */
   void *arg;
   block_t block;
+  int run;			/* Page-outs: blocks to take, 0 for chance.  */
   int wait;
   int done;
   unsigned long *group;		/* Counted down when served, if set.  */
@@ -759,13 +760,15 @@ cache_init (struct cache *c, char *mem, size_t nblocks)
 
 /* Queue a request; with WAIT, wait for it and free it.  */
 static void
-submit (enum req_kind kind, struct cache *c, block_t b, int wait)
+submit_run (enum req_kind kind, struct cache *c, block_t b, int run,
+	    int wait)
 {
   struct req *r = calloc (1, sizeof *r);
 
   r->kind = kind;
   r->cache = c;
   r->block = b;
+  r->run = run;
   r->wait = wait;
   pthread_mutex_lock (&req_lock);
   if (kind != REQ_EXIT)
@@ -783,6 +786,12 @@ submit (enum req_kind kind, struct cache *c, block_t b, int wait)
       free (r);
     }
   pthread_mutex_unlock (&req_lock);
+}
+
+static void
+submit (enum req_kind kind, struct cache *c, block_t b, int wait)
+{
+  submit_run (kind, c, b, 0, wait);
 }
 
 /* An evicted page's write, for a page that cannot leave.  On Mach the
@@ -872,7 +881,7 @@ held_fault (int sig, siginfo_t *si, void *ctx)
 #define RUN_MAX 8
 
 static void
-serve_pageout (struct cache *c, block_t b, int evict)
+serve_pageout (struct cache *c, block_t b, int evict, int run)
 {
   char *buf = malloc (RUN_MAX * block_size);
   size_t amount = 0;
@@ -914,9 +923,9 @@ serve_pageout (struct cache *c, block_t b, int evict)
      run are of one file, so directory blocks and file data do not mix.
      The disk pager writes a page at a time.  */
   size_t n = 1;
-  if (!c->disk_cache && rand_r (&seed) % 2)
+  if (!c->disk_cache && (run > 1 || (!run && rand_r (&seed) % 2)))
     {
-      size_t want = 2 + rand_r (&seed) % (RUN_MAX - 1);
+      size_t want = run ? (size_t) run : 2 + rand_r (&seed) % (RUN_MAX - 1);
       while (n < want && b + n < jt_nblocks () && c->resident[b + n]
 	     && c->dirty[b + n] && !c->paging_out[b + n]
 	     && !c->pagein_wait[b + n] && c->is_dir[b + n] == c->is_dir[b])
@@ -1063,10 +1072,10 @@ pager_thread (void *arg)
       switch (r->kind)
 	{
 	case REQ_CLEAN:
-	  serve_pageout (r->cache, r->block, 0);
+	  serve_pageout (r->cache, r->block, 0, r->run);
 	  break;
 	case REQ_EVICT:
-	  serve_pageout (r->cache, r->block, 1);
+	  serve_pageout (r->cache, r->block, 1, r->run);
 	  break;
 	case REQ_PAGEIN:
 	  serve_pagein (r->cache, r->block);
@@ -1277,6 +1286,15 @@ jt_file_pageout (block_t b, int evict, int wait)
 }
 
 void
+jt_dir_pageout_run (block_t b, int n, int evict, int wait)
+{
+  if (n < 1 || n > RUN_MAX)
+    _ext2_panic (__func__, "a run of %d blocks", n);
+  submit_run (pageout_evicts (evict) ? REQ_EVICT : REQ_CLEAN, &dirpager, b,
+	      n, wait);
+}
+
+void
 jt_dir_read (block_t b, void *out)
 {
   cache_read (&dirpager, b, out);
@@ -1304,20 +1322,48 @@ jt_dir_mark_dirty (diskfs_transaction_t *txn, block_t b)
   return err;
 }
 
+/* Write out every dirty page of C, keeping it, and wait for those
+   writes; with DRAIN, for every request of every pager too.  pager_sync
+   waits for its own pages only: a file pager's page-out held meanwhile
+   does not keep the disk pager's sync from returning.  */
 static void
-sync_cache (struct cache *c)
+sync_cache_wait (struct cache *c, int drain)
 {
   block_t n = jt_nblocks ();
+  unsigned long pending = 0;
 
   for (block_t b = 0; b < n; b++)
     {
       pthread_mutex_lock (&page_lock);
       int d = c->dirty[b] || c->paging_out[b];
       pthread_mutex_unlock (&page_lock);
-      if (d)
-	submit (REQ_CLEAN, c, b, 0);
+      if (!d)
+	continue;
+      struct req *r = calloc (1, sizeof *r);
+      r->kind = REQ_CLEAN;
+      r->cache = c;
+      r->block = b;
+      r->group = &pending;
+      pthread_mutex_lock (&req_lock);
+      pending++;
+      in_flight++;
+      *req_tail = r;
+      req_tail = &r->next;
+      pthread_cond_signal (&req_ready);
+      pthread_mutex_unlock (&req_lock);
     }
-  jt_drain ();
+  pthread_mutex_lock (&req_lock);
+  while (pending)
+    pthread_cond_wait (&req_done, &req_lock);
+  pthread_mutex_unlock (&req_lock);
+  if (drain)
+    jt_drain ();
+}
+
+static void
+sync_cache (struct cache *c)
+{
+  sync_cache_wait (c, 1);
 }
 
 void
@@ -1494,9 +1540,15 @@ int (*jt_ref_fail_hook) (block_t b);
 extern __thread struct disk_image_user *diskfs_exception_diu
   __attribute__ ((weak));
 
+void (*jt_ref_hook) (block_t b);
+
 void *
 disk_cache_block_ref (block_t block)
 {
+  void (*ref_hook) (block_t) = __atomic_load_n (&jt_ref_hook,
+						__ATOMIC_ACQUIRE);
+  if (ref_hook)
+    ref_hook (block);
   int (*fail) (block_t) = __atomic_load_n (&jt_ref_fail_hook,
 					   __ATOMIC_ACQUIRE);
   if (fail && &diskfs_exception_diu && diskfs_exception_diu)
@@ -1616,7 +1668,7 @@ pokel_sync (struct pokel *pokel, int wait)
 {
   (void) pokel;
   (void) wait;
-  sync_cache (&dcache);
+  sync_cache_wait (&dcache, 0);
 }
 
 /* Weak: balloc.c's, where it is linked in.  */

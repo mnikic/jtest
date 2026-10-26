@@ -101,6 +101,10 @@ extern int jt_inhibit_busy;
 void jt_dir_edit (block_t b, size_t off, const void *data, size_t len);
 void jt_dir_read (block_t b, void *out);
 void jt_dir_pageout (block_t b, int evict, int wait);
+/* jt_dir_pageout, taking with B the dirty blocks after it, N in all at
+   most (RUN_MAX, 8, at most): one journal_store_write for the run, as
+   file_pager_write_pages makes.  */
+void jt_dir_pageout_run (block_t b, int n, int evict, int wait);
 /* How many file pager page-outs wrote more than one block: they take
    the dirty blocks after the one asked for with them, half the time.  */
 unsigned long jt_pageout_runs (void);
@@ -332,6 +336,10 @@ extern int (*jt_store_fail_hook) (uint64_t off, size_t len,
 /* Whether a transaction in the checkpoint list still has to write block
    B home: a buffer for B not marked written.  */
 int jt_checkpoint_unwritten (block_t b);
+
+/* Called on every disk_cache_block_ref of block B, if set, before the
+   block is faulted in, with whatever locks the caller holds.  */
+extern void (*jt_ref_hook) (block_t b);
 
 /* Called on every disk_cache_block_ref_mapped of block B, if set: the
    stop-time sweep calls it, unlocked, right before it copies B.  */

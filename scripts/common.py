@@ -12,7 +12,7 @@ JTEST = os.path.dirname (os.path.dirname (os.path.abspath (__file__)))
 # Tests that take no seed: one run is all there is.
 DETERMINISTIC = {"t_forget_race", "t_free_only", "t_late_edit", "t_logfmt",
                  "t_fdir_renlock", "t_fdir_dead", "t_fdir_renfail", "t_fdir_enospc", "t_forget_inflight", "t_nodecache", "t_notify_race",
-                 "t_release_order",
+                 "t_release_order", "t_run_claims", "t_trunc_pageout",
                  "t_sweep_race"}
 
 IMAGES = ("base.img", "balloc.img", "big.img", "full.img")

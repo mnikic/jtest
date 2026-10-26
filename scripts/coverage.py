@@ -15,7 +15,7 @@ the gcov part runs, on the counts the last run left.
 
 The configurations: plain; JT_REORDER=2 (crashes that lose writes
 since the last flush); JT_PAGEOUT_DELAY and JT_WRITE_DELAY (page-outs
-and writes in flight a while).  K is JT_CRASH_POINTS (default 50).
+and writes in flight a while); JT_SYNCHRONOUS=1 (a mount with -s).  K is JT_CRASH_POINTS (default 50).
 """
 
 import argparse
@@ -37,6 +37,7 @@ CONFIGS = [
     ("plain", {}),
     ("reorder", {"JT_REORDER": "2"}),
     ("delays", {"JT_PAGEOUT_DELAY": "5000", "JT_WRITE_DELAY": "2000"}),
+    ("sync", {"JT_SYNCHRONOUS": "1"}),
 ]
 
 FUNC = re.compile (r"^function (\S+) called (\d+)")

@@ -207,16 +207,14 @@ MUTANTS = [
             why="dir_mkfile's file is not on the orphan list"),
     # truncate.c (de05e77).
     Mutant ("trunc-first", "ext2fs/truncate.c",
-            """      for (index = first; index < addr_per_block; index++)""",
-            """      for (index = 0; index < addr_per_block; index++)""",
+            """      for (index = first; index < addr_per_block; index++)
+	if (ind_bh[index])
+	  {""",
+            """      for (index = 0; index < addr_per_block; index++)
+	if (ind_bh[index])
+	  {""",
             "t_trunc",
             why="a truncation frees blocks below the new end"),
-    Mutant ("trunc-reserve", "ext2fs/truncate.c",
-            """	  journal_get_write_access (txn, *p);
-	  record_indir_poke (node, ind_bh);""",
-            """	  record_indir_poke (node, ind_bh);""",
-            "t_trunc",
-            why="a surviving indirect block is edited unreserved"),
     # The barriers, seen only by crashes that lose writes since the last
     # flush (JT_REORDER).
     Mutant ("flush-before-commit", J,
@@ -246,6 +244,38 @@ MUTANTS = [
             # 3 seconds, so the watchdog need not wait 300.
             env={"JT_WATCHDOG": "20"},
             why="a failed write of several blocks keeps its claims"),
+    # An indirect block reserved before trunc_indirect edits it.
+    Mutant ("trunc-reserve", "ext2fs/truncate.c",
+            """      for (index = first; index < addr_per_block; index++)
+	if (ind_bh[index] && offset + index * span >= end)
+	  {
+	    journal_get_write_access (txn, *p);
+	    break;
+	  }
+""",
+            "",
+            "t_trunc_pageout",
+            why="an indirect block is edited unreserved, and a page-out "
+            "writes the edit home before its free commits"),
+    # Page-out runs (t_run_claims).
+    Mutant ("run-stop-unchecked", J,
+            """      if (ext2_journal != journal)
+	{
+	  /* It stopped, with nothing left in it: the rest goes home as
+	     without a journal.  */""",
+            """      if (0)
+	{
+	  /* It stopped, with nothing left in it: the rest goes home as
+	     without a journal.  */""",
+            "t_run_claims", ["stop"],
+            why="a run goes on with a journal that stopped during its write"),
+    Mutant ("run-committed-hazard", J,
+            """  /* If commit crossed WAL barrier, it's safe to coalesce and write */
+  if (commit && commit->t_state == T_COMMITTED)
+    jb_commit = NULL;""",
+            "",
+            "t_run_claims", ["committed"],
+            why="a run stops at a block whose commit is on disk"),
     Mutant ("quiesce-ignores-error", J,
             """  if (io_error)
     {
