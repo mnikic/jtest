@@ -104,9 +104,19 @@ def start_translator (a):
         pass
     cmd = ["settrans", "-ac", a.mnt, a.wrapper] + a.args + [a.dev]
     step (" ".join (cmd))
-    r = run (cmd)
-    if r.returncode:
-        raise RuntimeError ("%s: %s" % (" ".join (cmd), r.stdout.strip ()))
+    # Not through a pipe: the translator inherits settrans' output and
+    # keeps it open, so a pipe would never end.  Its messages, journal
+    # warnings among them, go to --out/translator.log.
+    with open (os.path.join (a.out, "translator.log"), "a") as tlog:
+        tlog.write (time.strftime ("--- %Y-%m-%d %H:%M:%S ") + " ".join (cmd)
+                    + "\n")
+        tlog.flush ()
+        status = subprocess.run (cmd, stdin=subprocess.DEVNULL, stdout=tlog,
+                                 stderr=subprocess.STDOUT).returncode
+    if status:
+        raise RuntimeError ("%s failed (exit %d); see %s"
+                            % (" ".join (cmd), status,
+                               os.path.join (a.out, "translator.log")))
     pid = recorded_pid (a)
     step ("translator pid %s" % pid)
     if pid is None:
