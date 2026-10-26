@@ -236,12 +236,9 @@ MUTANTS = [
             why="a commit returns before its commit block is on disk"),
     # Failed home writes (jtest coverage gaps).
     Mutant ("run-claims-kept", J,
-            """	  if (actual_blocks < flush_count && ext2_journal == journal)
-	    journal_clear_flushing_locked (b + actual_blocks,
-					   flush_count - actual_blocks);""",
-            """	  if (0)
-	    journal_clear_flushing_locked (b + actual_blocks,
-					   flush_count - actual_blocks);""",
+            """	      journal_clear_flushing_locked (b + actual_blocks,
+					     flush_count - actual_blocks);""",
+            "",
             "t_ioerr", ["pager-run"],
             # Caught by its deadlock: a run reaches the unmount in about
             # 3 seconds, so the watchdog need not wait 300.
@@ -279,6 +276,22 @@ MUTANTS = [
             "",
             "t_run_claims", ["committed"],
             why="a run stops at a block whose commit is on disk"),
+    # A pager's home write that fails (t_ioerr pager, pager-run).
+    Mutant ("pager-fail-stale", J,
+            """      if (newest && !newest->jb_is_written)
+	newest->needs_flush = 1;""",
+            "",
+            "t_run_claims", ["fail"],
+            why="after a failed page-out, a read gets the older block on "
+            "disk instead of the journal's copy"),
+    Mutant ("pager-run-abandoned", J,
+            """	  journal_clear_flushing_locked (b, 1);
+	  journal_keep_failed_blocks_locked (b, 1);
+	  i++;""",
+            """	  journal_clear_flushing_locked (b, 1);
+	  i++;""",
+            "t_run_claims", ["fail"],
+            why="the rest of a run whose write failed is dropped"),
     Mutant ("quiesce-ignores-error", J,
             """  if (io_error)
     {

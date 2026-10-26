@@ -1064,13 +1064,16 @@ serve_pagein (struct cache *c, block_t b)
       pthread_mutex_unlock (&page_lock);
       return;
     }
+  int after_failure = 0;
   if (c->invalid[b])
     {
       /* memory_object_data_error: the fault fails.  The harness has no
 	 faulting thread to fail, so it counts it and lets the data be
-	 what the journal reads, unchecked.  */
+	 what the journal reads.  The page-out that failed wrote a copy
+	 no transaction was still editing, which the journal has: that is
+	 what it must read back.  */
       c->invalid[b] = 0;
-      c->discarded[b] = 1;
+      after_failure = 1;
       pager_errors++;
     }
   c->paging_in[b] = 1;
@@ -1091,7 +1094,8 @@ serve_pagein (struct cache *c, block_t b)
   else if (memcmp (buf, cslot (c, b), block_size))
     {
       stale_reads++;
-      ext2_warning ("jtest: STALE %s page-in of block %u", c->name, b);
+      ext2_warning ("jtest: STALE %s page-in of block %u%s", c->name, b,
+		    after_failure ? ", after its page-out failed" : "");
       if (!c->disk_cache)
 	{
 	  jt_trace (b, "page-in: evicted bytes were", cslot (c, b));

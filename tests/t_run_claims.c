@@ -6,7 +6,7 @@
    write it home.  Every claim must be given up once the write is done,
    or a checkpoint waits for it forever.
 
-   Three cases, forced, each in a process of its own:
+   Four cases, forced, each in a process of its own:
 
    committed: T holds directory blocks D0 and D1, and disk cache block
       X, whose page-out T took into its shadow.  T commits; the flush
@@ -28,6 +28,12 @@
       home.  The run then finds the journal gone, and writes D1 home as
       without a journal (journal_store_write).
 
+   fail: T holds D0, D1 and D2 and commits, none of them home; then the
+      running transaction T2 holds D1 at version 2.  A page-out of the
+      run D0-D2 fails at D0's write, so the pager loses all three pages.
+      D1 must still go into T2's shadow, and D0 and D2 be read back from
+      T's copies: every page-in after the failure gets what was lost.
+
    Each time: one write for the run where it can be one, no claim left
    once the pagers are idle, nothing left for a checkpoint to write, the
    last version of every block home after the unmount, and every crash
@@ -39,9 +45,9 @@
 
 #include "common.h"
 
-enum { COMMITTED, CHECKPOINT, STOP, NMODES };
+enum { COMMITTED, CHECKPOINT, STOP, FAIL, NMODES };
 static const char *const mode_names[NMODES] = { "committed", "checkpoint",
-						"stop" };
+						"stop", "fail" };
 static int mode;
 
 #define NRUN 3
@@ -256,6 +262,67 @@ run_checkpoint (void)
   add_need (2, 7);
 }
 
+static int fail_armed;
+
+static int
+fail_d0 (uint64_t off, size_t len, const void *buf)
+{
+  (void) len;
+  (void) buf;
+  if (off == (uint64_t) d[0] << log2_block_size
+      && __atomic_exchange_n (&fail_armed, 0, __ATOMIC_ACQ_REL))
+    return EIO;
+  return 0;
+}
+
+static void
+run_fail (void)
+{
+  diskfs_transaction_t *txn;
+  char buf[block_size];
+  static const long want[3] = { 1, 2, 1 };
+
+  run_need = 3;
+  jt_expected_warning = "page-out of blocks";
+  txn = diskfs_journal_start_transaction ();
+  for (int i = 0; i < 3; i++)
+    dir_version (txn, d[i], 1);
+  CHECK (!diskfs_journal_commit_transaction (txn), "T's commit");
+  add_need (1, 7);
+  for (int i = 0; i < 3; i++)
+    CHECK (jt_checkpoint_unwritten (d[i]), "block %u is home already",
+	   d[i]);
+  txn = diskfs_journal_start_transaction ();
+  dir_version (txn, d[1], 2);
+  diskfs_journal_stop_transaction (txn);
+
+  __atomic_store_n (&fail_armed, 1, __ATOMIC_RELEASE);
+  JT_SET_HOOK (jt_store_fail_hook, fail_d0);
+  jt_dir_pageout_run (d[0], 3, 1, 1);
+  JT_SET_HOOK (jt_store_fail_hook, NULL);
+  CHECK (!__atomic_load_n (&fail_armed, __ATOMIC_ACQUIRE),
+	 "the write of block %u never failed", d[0]);
+
+  for (int i = 0; i < 3; i++)
+    {
+      jt_dir_read (d[i], buf);
+      CHECK (pattern_version (buf, d[i]) == want[i], "block %u read back "
+	     "as version %ld after the failed page-out, %ld lost",
+	     d[i], pattern_version (buf, d[i]), want[i]);
+    }
+  CHECK (jt_stale_reads () == 0, "%lu stale page-ins after the failed "
+	 "page-out", jt_stale_reads ());
+
+  txn = diskfs_journal_start_transaction ();
+  CHECK (!diskfs_journal_commit_transaction (txn), "T2's commit");
+  add_need (2, 2);
+  txn = diskfs_journal_start_transaction ();
+  for (int i = 0; i < 3; i++)
+    dir_version (txn, d[i], 3);
+  CHECK (!diskfs_journal_commit_transaction (txn), "T3's commit");
+  add_need (3, 7);
+}
+
 static void *
 stopper (void *arg)
 {
@@ -323,8 +390,10 @@ run (const char *image)
     run_committed ();
   else if (mode == CHECKPOINT)
     run_checkpoint ();
-  else
+  else if (mode == STOP)
     run_stop ();
+  else
+    run_fail ();
 
   jt_drain ();
   long claims = jt_flush_claims ();
