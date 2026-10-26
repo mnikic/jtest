@@ -267,7 +267,14 @@ def main ():
         with open (os.path.join (rdir, "workload.txt"), "w") as wlog:
             step ("workload started; the kill in %.1f s" % delay)
             w = start_workload (a, wlog)
-            time.sleep (delay)
+            started = time.monotonic ()
+            stopped_at = None
+            while time.monotonic () - started < delay:
+                if stopped_at is None and w.poll () is not None:
+                    stopped_at = time.monotonic () - started
+                time.sleep (0.2)
+            if stopped_at is None and w.poll () is not None:
+                stopped_at = time.monotonic () - started
             if clean:
                 stop_workload (w)
                 r = run (["settrans", "-g", a.mnt])
@@ -295,8 +302,8 @@ def main ():
             cleans += 1
         else:
             crashes += 1
-        if wstatus in (None, -9):
-            wnote = "still running"
+        if stopped_at is None:
+            wnote = "running at the kill"
         else:
             # It stopped by itself: say why, from its last line.
             last = ""
@@ -307,7 +314,8 @@ def main ():
                 last = lines[-1] if lines else "no output"
             except OSError:
                 pass
-            wnote = "had stopped (exit %s: %s)" % (wstatus, last[:120])
+            wnote = "had stopped by itself after %.1f s (exit %s: %s)" % (
+                stopped_at, wstatus, last[:120])
         log (a.out, "round %d: %s after %.1f s, workload %s: clean"
              % (rnd, kind, delay, wnote))
 
