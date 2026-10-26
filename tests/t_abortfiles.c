@@ -34,13 +34,15 @@ fail_hook (uint64_t off, size_t len, const void *buf)
 {
   const uint32_t *w = buf;
 
-  if (failed || !jt_in_journal (off) || jt_journal_index (off) == 0
+  /* Every thread's writes come through here.  */
+  if (__atomic_load_n (&failed, __ATOMIC_ACQUIRE)
+      || !jt_in_journal (off) || jt_journal_index (off) == 0
       || (len >= 8 && be32toh (w[0]) == 0xC03B3998U))
     return 0;
-  if (++matches < fail_at)
+  if (__atomic_add_fetch (&matches, 1, __ATOMIC_RELAXED) < fail_at)
     return 0;
-  failed = 1;
-  failed_at = jt_log_count ();
+  __atomic_store_n (&failed_at, jt_log_count (), __ATOMIC_RELAXED);
+  __atomic_store_n (&failed, 1, __ATOMIC_RELEASE);
   return EIO;
 }
 
@@ -68,7 +70,7 @@ main (int argc, char **argv)
   for (int i = 0; i < NTHREADS; i++)
     pthread_join (t[i], NULL);
 
-  CHECK (failed, "no log write failed");
+  CHECK (__atomic_load_n (&failed, __ATOMIC_ACQUIRE), "no log write failed");
   for (int waited = 0; !(ro = jt_readonly (&inhibited)) && waited < 150;
        waited++)
     usleep (100000);

@@ -95,8 +95,9 @@ store_hook (uint64_t off, size_t len, const void *data)
   if (off == (uint64_t) d[1] << log2_block_size && jt_on_pager_thread ())
     __atomic_store_n (&d1_by_pager, 1, __ATOMIC_RELEASE);
 
-  if (off != (uint64_t) hold_blk << log2_block_size
-      || pattern_version (data, hold_blk) != 1)
+  block_t hb = __atomic_load_n (&hold_blk, __ATOMIC_ACQUIRE);
+  if (off != (uint64_t) hb << log2_block_size
+      || pattern_version (data, hb) != 1)
     return;
   pthread_mutex_lock (&hold_lock);
   if (hold_armed)
@@ -218,8 +219,11 @@ run_committed (void)
   pthread_t c;
 
   run_need = 2;
-  hold_blk = x_blk;
+  /* kjournald's writes go through the hook already.  */
+  pthread_mutex_lock (&hold_lock);
+  __atomic_store_n (&hold_blk, x_blk, __ATOMIC_RELEASE);
   hold_armed = 1;
+  pthread_mutex_unlock (&hold_lock);
   pthread_create (&c, NULL, committer, NULL);
   wait_hold ();
 
@@ -346,8 +350,10 @@ run_stop (void)
   dir_version (txn, d[1], 1);
   diskfs_journal_stop_transaction (txn);
 
-  hold_blk = d[0];
+  pthread_mutex_lock (&hold_lock);
+  __atomic_store_n (&hold_blk, d[0], __ATOMIC_RELEASE);
   hold_armed = 1;
+  pthread_mutex_unlock (&hold_lock);
   jt_dir_pageout_run (d[0], 2, 1, 0);
   wait_hold ();
 

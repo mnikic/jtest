@@ -39,7 +39,8 @@ on_release (block_t start, unsigned long count)
 {
   if (b2 >= start && b2 < start + count)
     __atomic_store_n (&b2_back, 1, __ATOMIC_RELEASE);
-  if (!(held >= start && held < start + count))
+  block_t h = __atomic_load_n (&held, __ATOMIC_ACQUIRE);
+  if (!(h >= start && h < start + count))
     return;
   pthread_mutex_lock (&hold_lock);
   hold_reached = 1;
@@ -88,7 +89,7 @@ main (int argc, char **argv)
   b1 = picked[0];
   b2 = picked[1];
   b3 = picked[2];
-  held = b1;
+  __atomic_store_n (&held, b1, __ATOMIC_RELEASE);
   JT_SET_HOOK (jt_on_release, on_release);
 
   /* 1.  */
@@ -123,7 +124,7 @@ main (int argc, char **argv)
   pthread_t t3;
   pthread_mutex_lock (&hold_lock);
   hold_reached = hold_released = 0;
-  held = b3;
+  __atomic_store_n (&held, b3, __ATOMIC_RELEASE);
   pthread_mutex_unlock (&hold_lock);
   pthread_create (&t3, NULL, free_and_commit, (void *) (uintptr_t) b3);
   pthread_mutex_lock (&hold_lock);

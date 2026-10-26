@@ -385,12 +385,14 @@ abort_fail_hook (uint64_t off, size_t len, const void *buf)
   const uint32_t *w = buf;
 
   (void) len;
-  if (failed || !jt_in_journal (off) || jt_journal_index (off) == 0
+  /* Every thread's writes come through here.  */
+  if (__atomic_load_n (&failed, __ATOMIC_ACQUIRE)
+      || !jt_in_journal (off) || jt_journal_index (off) == 0
       || be32toh (w[0]) == JBD2_MAGIC_NUMBER)
     return 0;
-  if (++data_writes < 600)
+  if (__atomic_add_fetch (&data_writes, 1, __ATOMIC_RELAXED) < 600)
     return 0;
-  failed = 1;
+  __atomic_store_n (&failed, 1, __ATOMIC_RELEASE);
   return EIO;
 }
 
@@ -441,7 +443,7 @@ run_escape_abort (void)
   JT_SET_HOOK (jt_store_fail_hook, abort_fail_hook);
   error_t err = jt_commit (txn);
   JT_SET_HOOK (jt_store_fail_hook, NULL);
-  CHECK (failed, "no log write failed");
+  CHECK (__atomic_load_n (&failed, __ATOMIC_ACQUIRE), "no log write failed");
   CHECK (err == EIO, "the commit returned %s", strerror (err));
 
   for (int i = 0; i < BIG; i++)
@@ -497,8 +499,9 @@ run_oversize (const char *image)
       setvbuf (stderr, NULL, _IONBF, 0);
       jt_mount (image, 2, 0);
       pick_free_blocks (blocks, BIG);
-      JT_SET_HOOK (jt_store_write_hook, oversize_hook);
+      /* Before the hook: kjournald's writes go through it too.  */
       log_fd = fds[1];
+      JT_SET_HOOK (jt_store_write_hook, oversize_hook);
       diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
       for (int i = 0; i < BIG; i++)
 	journal_version (txn, blocks[i], 1);

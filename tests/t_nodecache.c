@@ -80,7 +80,7 @@ void __real_diskfs_node_norefs (struct node *np);
 void
 __wrap_diskfs_node_norefs (struct node *np)
 {
-  if (np == watched)
+  if (np == __atomic_load_n (&watched, __ATOMIC_ACQUIRE))
     __atomic_add_fetch (&watched_freed, 1, __ATOMIC_RELAXED);
   __real_diskfs_node_norefs (np);
 }
@@ -150,10 +150,10 @@ struct node *
 __wrap_diskfs_make_node_alloc (size_t size)
 {
   struct node *np = __real_diskfs_make_node_alloc (size);
-  if (np && record_made)
+  if (np && __atomic_load_n (&record_made, __ATOMIC_ACQUIRE))
     {
-      made = np;
-      watched = np;
+      __atomic_store_n (&made, np, __ATOMIC_RELEASE);
+      __atomic_store_n (&watched, np, __ATOMIC_RELEASE);
     }
   if (np && __atomic_exchange_n (&mk_armed, 0, __ATOMIC_ACQ_REL))
     {
@@ -185,7 +185,8 @@ void __real_diskfs_set_node_times (struct node *np);
 void
 __wrap_diskfs_set_node_times (struct node *np)
 {
-  if (np == victim && __atomic_exchange_n (&armed, 0, __ATOMIC_ACQ_REL))
+  if (np == __atomic_load_n (&victim, __ATOMIC_ACQUIRE)
+      && __atomic_exchange_n (&armed, 0, __ATOMIC_ACQ_REL))
     {
       __atomic_store_n (&x_in, 1, __ATOMIC_RELEASE);
       /* Y looks the inode up meanwhile.  */
@@ -283,22 +284,23 @@ readerr (void)
 
   /* 1.  */
   fail_blk = dino_block (ino);
-  record_made = 1;
+  __atomic_store_n (&record_made, 1, __ATOMIC_RELEASE);
   JT_SET_HOOK (jt_ref_fail_hook, fail_inode_block);
   diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
   error_t err = diskfs_cached_lookup (ino, &np);
   diskfs_journal_stop_transaction (txn);
   JT_SET_HOOK (jt_ref_fail_hook, NULL);
-  record_made = 0;
+  __atomic_store_n (&record_made, 0, __ATOMIC_RELEASE);
   CHECK (err == EIO, "the lookup with the failed read: %s", strerror (err));
-  CHECK (made, "no node was made");
+  struct node *mnp = __atomic_load_n (&made, __ATOMIC_ACQUIRE);
+  CHECK (mnp, "no node was made");
 
   /* 2.  */
   unsigned long freed = __atomic_load_n (&watched_freed, __ATOMIC_ACQUIRE);
   struct references r = { 0, 0 };
   if (!freed)
     /* Not freed, so still there to look at.  */
-    refcounts_references (&made->refcounts, &r);
+    refcounts_references (&mnp->refcounts, &r);
 
   /* 3.  */
   txn = diskfs_journal_start_transaction ();
@@ -375,7 +377,7 @@ lastref (void)
   CHECK (np->dn_stat.st_nlink == 0, "the new file has links");
 
   /* 2.  */
-  victim = np;
+  __atomic_store_n (&victim, np, __ATOMIC_RELEASE);
   __atomic_store_n (&armed, 1, __ATOMIC_RELEASE);
   pthread_create (&x, NULL, closer, np);
   while (!__atomic_load_n (&x_in, __ATOMIC_ACQUIRE))

@@ -71,7 +71,7 @@ fail_hook (uint64_t off, size_t len, const void *buf)
   if (!match || __atomic_add_fetch (&matches, 1, __ATOMIC_RELAXED) < fail_at)
     return 0;
   __atomic_store_n (&failed, 1, __ATOMIC_RELEASE);
-  failed_at_log = jt_log_count ();
+  __atomic_store_n (&failed_at_log, jt_log_count (), __ATOMIC_RELAXED);
   return EIO;
 }
 
