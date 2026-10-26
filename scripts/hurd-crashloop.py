@@ -14,8 +14,8 @@ Each round:
   1. Starts the translator: settrans -ac MNT TRANSLATOR [ARGS] DEVICE,
      TRANSLATOR being --translator (default /hurd/ext2fs), for instance
      a build's ext2fs.static.
-  2. Runs the workload in MNT (by default: untar BLOB into a new
-     directory, remove the one before, repeat), in its own process group.
+  2. Runs the workload in MNT (by default: remove MNT/work, untar BLOB
+     into a new one, repeat), in its own process group.
   3. After a random delay (--min-kill to --max-kill seconds), kill -9's
      the translator, then the workload.
   4. Replays the journal as e2fsck does at boot (e2fsck -E journal_only
@@ -44,9 +44,13 @@ import subprocess
 import sys
 import time
 
+# Remove the last tree, unpack a new one: a kill lands in a big rm -rf
+# or a big untar, and what an earlier round left half done is removed
+# first, so nothing it left can make tar fail.
 DEFAULT_CMDS = [
-    "mkdir -p d{n} && tar -xf {blob} -C d{n}",
-    "rm -rf d$(({n} - 1))",
+    "rm -rf work",
+    "mkdir work",
+    "tar -xf {blob} -C work",
 ]
 
 
@@ -199,8 +203,8 @@ def main ():
                      "a path on this system, not under --mnt, which is the "
                      "filesystem the rounds crash")
     ap.add_argument ("--cmd", action="append",
-                     help="a workload command (repeatable); default: untar "
-                     "the blob into d{n}, remove d{n-1}")
+                     help="a workload command (repeatable); default: "
+                     "rm -rf work, mkdir work, untar the blob into it")
     ap.add_argument ("--translator", default="/hurd/ext2fs",
                      help="the ext2fs to run (default /hurd/ext2fs), e.g. "
                      "a build's ext2fs/ext2fs.static")
