@@ -20,8 +20,9 @@ Each round:
 Every --clean-every rounds, the round ends with a clean unmount instead
 (settrans -g), and the same check.
 
-It stops at the first unclean check, and keeps the fsck output, the
-workload's output and the translator's command line under --out.  With
+It stops at the first unclean check, and keeps the fsck output and the
+workload's output under --out.  The translator runs through
+--out/translator.sh, which records its pid in --out/translator.pid.  With
 --save-image and a file as DEVICE, it also copies the image as the crash
 left it, before e2fsck touches it.  It stops too after --hours, or
 --rounds.  The log of every round goes to --out/crashloop.log.
@@ -67,52 +68,51 @@ def step (msg):
         print (time.strftime ("%H:%M:%S ") + "  " + msg, flush=True)
 
 
-def read_cmdline (pid):
-    """PID's command line from /proc (the Hurd's procfs), or None.  The
-    read goes through the proc server and can block on a task that does
-    not answer, so it is bounded."""
+def write_wrapper (a):
+    """The program settrans starts: it writes its pid to a file and execs
+    the translator, which keeps that pid.  The pid is then known without
+    looking through /proc, whose reads can block on the Hurd."""
+    a.pidfile = os.path.join (a.out, "translator.pid")
+    a.wrapper = os.path.join (a.out, "translator.sh")
+    with open (a.wrapper, "w") as f:
+        f.write ("#!/bin/sh\necho $$ > %s\nexec %s \"$@\"\n"
+                 % (a.pidfile, a.translator))
+    os.chmod (a.wrapper, 0o755)
+
+
+def recorded_pid (a):
+    """The pid of the translator last started, if it still runs."""
     try:
-        r = subprocess.run (["cat", "/proc/%s/cmdline" % pid],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, timeout=5)
-    except subprocess.TimeoutExpired:
-        step ("no answer for /proc/%s/cmdline; skipped" % pid)
+        with open (a.pidfile) as f:
+            pid = int (f.read ().strip ())
+    except (OSError, ValueError):
         return None
-    return r.stdout if r.returncode == 0 else None
-
-
-def translator_pids (dev):
-    """Pids of the ext2fs processes whose command line names DEV."""
-    pids = []
-    me = os.getpid ()
-    for name in os.listdir ("/proc"):
-        if not name.isdigit () or int (name) == me:
-            continue
-        raw = read_cmdline (name)
-        if raw is None:
-            continue
-        args = raw.split (b"\0")
-        args = [a.decode (errors="replace") for a in args if a]
-        if (args and os.path.basename (args[0]).startswith ("ext2fs")
-                and dev in args[1:]):
-            pids.append (int (name))
-    return pids
+    try:
+        os.kill (pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        pass
+    return pid
 
 
 def start_translator (a):
     os.makedirs (a.mnt, exist_ok=True)
-    cmd = ["settrans", "-ac", a.mnt, a.translator] + a.args + [a.dev]
+    try:
+        os.unlink (a.pidfile)
+    except FileNotFoundError:
+        pass
+    cmd = ["settrans", "-ac", a.mnt, a.wrapper] + a.args + [a.dev]
     step (" ".join (cmd))
     r = run (cmd)
     if r.returncode:
         raise RuntimeError ("%s: %s" % (" ".join (cmd), r.stdout.strip ()))
-    step ("looking for the translator's pid in /proc")
-    pids = translator_pids (a.dev)
-    step ("translator pid %s" % pids)
-    if len (pids) != 1:
-        raise RuntimeError ("expected one ext2fs on %s, found %s"
-                            % (a.dev, pids))
-    return pids[0]
+    pid = recorded_pid (a)
+    step ("translator pid %s" % pid)
+    if pid is None:
+        raise RuntimeError ("the translator on %s did not start, or died"
+                            % a.dev)
+    return pid
 
 
 def clear_mountpoint (a):
@@ -121,13 +121,16 @@ def clear_mountpoint (a):
     step ("clearing %s" % a.mnt)
     run (["settrans", "-fga", a.mnt])
     run (["settrans", "-a", a.mnt])
-    if not translator_pids (a.dev):
+    pid = recorded_pid (a)
+    if pid is None:
         return
-    for pid in translator_pids (a.dev):
-        os.kill (pid, signal.SIGKILL)
-    time.sleep (1)
-    if translator_pids (a.dev):
-        raise RuntimeError ("an ext2fs on %s will not go away" % a.dev)
+    step ("killing translator %d" % pid)
+    os.kill (pid, signal.SIGKILL)
+    for _ in range (50):
+        if recorded_pid (a) is None:
+            return
+        time.sleep (0.1)
+    raise RuntimeError ("translator %d on %s will not go away" % (pid, a.dev))
 
 
 def start_workload (a, wlog):
@@ -224,6 +227,7 @@ def main ():
     rng = random.Random (a.seed)
     deadline = time.monotonic () + a.hours * 3600 if a.hours else None
 
+    write_wrapper (a)
     log (a.out, "translator %s %s on %s" % (a.translator, " ".join (a.args),
                                            a.dev))
     clear_mountpoint (a)
