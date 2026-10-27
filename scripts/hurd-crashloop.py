@@ -7,8 +7,9 @@ Run as root inside the Hurd, on a filesystem made for it:
   python3 hurd-crashloop.py --dev DEVICE --mnt /mnt/crash \\
       --blob /root/blob.tar --hours 8
 
---blob and --out are paths on the running system, and must not be under
---mnt: that is the filesystem each round crashes.
+--blob and --out are paths on the running system.  --out must not be
+under --mnt, the filesystem each round crashes.  --blob may be (the
+workload only reads it); it is then looked for once that is mounted.
 
 Each round:
   1. Starts the translator: settrans -ac MNT TRANSLATOR [ARGS] DEVICE,
@@ -216,8 +217,7 @@ def main ():
                      help="the device or image file the filesystem is on")
     ap.add_argument ("--mnt", required=True, help="where to set it up")
     ap.add_argument ("--blob", help="a tar file for the default workload: "
-                     "a path on this system, not under --mnt, which is the "
-                     "filesystem the rounds crash")
+                     "a path on this system, which may be under --mnt")
     ap.add_argument ("--cmd", action="append",
                      help="a workload command (repeatable); default: "
                      "rm -rf work, mkdir work, untar the blob into it")
@@ -254,14 +254,18 @@ def main ():
     a.cmd = a.cmd or DEFAULT_CMDS
     if any ("{blob}" in c for c in a.cmd) and not a.blob:
         ap.error ("the workload uses {blob}: give --blob")
+    mnt = os.path.abspath (a.mnt).rstrip ("/") + "/"
+    if os.path.abspath (a.out).startswith (mnt):
+        ap.error ("--out must not be on the filesystem under test (%s)"
+                  % a.mnt)
+    a.blob_on_mnt = False
     if a.blob:
         a.blob = os.path.abspath (a.blob)
-        if not os.path.isfile (a.blob):
+        # On the filesystem under test, it is there only once it is
+        # mounted: checked in each round.  It is only read.
+        a.blob_on_mnt = a.blob.startswith (mnt)
+        if not a.blob_on_mnt and not os.path.isfile (a.blob):
             ap.error ("%s: no such file" % a.blob)
-        mnt = os.path.abspath (a.mnt).rstrip ("/") + "/"
-        if a.blob.startswith (mnt) or os.path.abspath (a.out).startswith (mnt):
-            ap.error ("--blob and --out must not be on the filesystem under "
-                      "test (%s)" % a.mnt)
     a.translator = os.path.abspath (a.translator)
     if not os.access (a.translator, os.X_OK):
         ap.error ("%s is not an executable" % a.translator)
@@ -295,6 +299,12 @@ def main ():
         delay = rng.uniform (a.min_kill, a.max_kill)
 
         pid = start_translator (a)
+        if a.blob_on_mnt and not os.path.isfile (a.blob):
+            log (a.out, "round %d: %s is not there with the filesystem "
+                 "mounted; stopping" % (rnd, a.blob))
+            os.kill (pid, signal.SIGKILL)
+            clear_mountpoint (a)
+            return 1
         with open (os.path.join (rdir, "workload.txt"), "w") as wlog:
             step ("workload started; the kill in %.1f s" % delay)
             w = start_workload (a, wlog)
