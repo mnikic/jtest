@@ -345,8 +345,15 @@ def main ():
                 last = lines[-1] if lines else "no output"
             except OSError:
                 pass
-            wnote = "had stopped by itself after %.1f s (exit %s: %s)" % (
-                stopped_at, wstatus, last[:120])
+            # Kept: the next round starts with a new round directory.
+            kept = os.path.join (a.out, "workload-round-%d.txt" % rnd)
+            try:
+                shutil.copyfile (os.path.join (rdir, "workload.txt"), kept)
+            except OSError:
+                kept = "not kept"
+            wnote = ("had stopped by itself after %.1f s (exit %s: %s; "
+                     "output in %s)" % (stopped_at, wstatus, last[:120],
+                                        kept))
         log (a.out, "round %d: %s after %.1f s, workload %s: clean"
              % (rnd, kind, delay, wnote))
 
