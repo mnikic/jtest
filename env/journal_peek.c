@@ -155,3 +155,79 @@ jt_journal_state (FILE *f)
   if (j->j_running_transaction)
     txn_state (f, "running", j->j_running_transaction);
 }
+
+static uint32_t
+shadow_hash (const journal_buffer_t *jb)
+{
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < block_size; i++)
+    h = (h ^ ((const unsigned char *) jb->jb_shadow_data)[i]) * 16777619u;
+  return h;
+}
+
+static size_t
+holder (char *out, size_t len, const char *kind, diskfs_transaction_t *t,
+	block_t b)
+{
+  journal_buffer_t *jb = t ? journal_map_lookup (&t->t_buffer_map, b) : NULL;
+  if (!jb || len < 2)
+    return 0;
+  int n = snprintf (out, len, " %s%u:%s%s%s%s%s%s%s#%08x", kind, t->t_tid,
+		    jb->needs_flush ? "f" : "", jb->jb_is_written ? "w" : "",
+		    jb->jb_is_flushing ? "c" : "", jb->needs_copy ? "x" : "",
+		    jb->jb_sweeping ? "s" : "", jb->jb_external ? "e" : "",
+		    jb->jb_awaiting_data ? "a" : "", shadow_hash (jb));
+  return n < 0 ? 0 : (size_t) n < len ? (size_t) n : len - 1;
+}
+
+/* The journal's buffers of block B, for the trace: each transaction
+   holding it (K checkpoint list, C committing, R running, A aborted),
+   its tid, flags (f needs_flush, w written, c claimed, x needs_copy,
+   s sweeping, e external, a awaiting data) and its shadow's hash.  Only
+   if the journal's lock is free: a caller may hold it.  */
+void
+jt_block_holders (block_t b, char *out, size_t len)
+{
+  journal_t *j = ext2_journal;
+
+  out[0] = 0;
+  if (!j)
+    return;
+  if (pthread_mutex_trylock (&j->j_state_lock))
+    {
+      snprintf (out, len, " ?");
+      return;
+    }
+  /* Of the checkpoint list: those not written yet, and the two newest;
+     the others are only counted.  */
+  size_t n = 0, held = 0, skipped = 0;
+  for (diskfs_transaction_t *t = j->j_checkpoint_list; t;
+       t = t->t_checkpoint_next)
+    held += journal_map_lookup (&t->t_buffer_map, b) != NULL;
+  size_t k = 0;
+  for (diskfs_transaction_t *t = j->j_checkpoint_list; t;
+       t = t->t_checkpoint_next)
+    {
+      journal_buffer_t *jb = journal_map_lookup (&t->t_buffer_map, b);
+      if (!jb)
+	continue;
+      k++;
+      if (jb->jb_is_written && k + 2 <= held)
+	{
+	  skipped++;
+	  continue;
+	}
+      if (skipped)
+	{
+	  int m = snprintf (out + n, len - n, " (%zu written)", skipped);
+	  n += m > 0 && (size_t) m < len - n ? (size_t) m : 0;
+	  skipped = 0;
+	}
+      n += holder (out + n, len - n, "K", t, b);
+    }
+  n += holder (out + n, len - n, "C", j->j_committing_transaction, b);
+  n += holder (out + n, len - n, "R", j->j_running_transaction, b);
+  n += holder (out + n, len - n, "A", j->j_aborted_transaction, b);
+  pthread_mutex_unlock (&j->j_state_lock);
+}
+

@@ -204,6 +204,8 @@ log_append (uint64_t off, const void *data, size_t len)
 }
 
 static void gdb_backtraces (void);
+static void trace_event (block_t b, const char *what, const void *data,
+			 const char *extra);
 
 /* The journal superblock's s_start, as the disk has it: where a replay
    starts, 0 for an empty log.  DISK_LOG_LIVE: whether the block there
@@ -306,10 +308,21 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
   memcpy (store_mem + off, buf, len);
   log_append (off, buf, len);
   /* Home writes in the trace, with what they wrote: a checkpoint's go
-     only through here.  */
+     only through here.  With them, who wrote, and the journal's buffers
+     of the block (jt_block_holders).  */
   for (size_t i = 0; i < len; i += block_size)
-    jt_trace ((off + i) >> log2_block_size, "store write",
-	      (const char *) buf + i);
+    {
+      block_t tb = (off + i) >> log2_block_size;
+      char extra[160] = "";
+      if (in_journal && !in_journal[tb])
+	{
+	  int n = snprintf (extra, sizeof extra, "by %s:",
+			    jt_on_pager_thread () ? "pager"
+			    : jt_checkpointing () ? "ckpt" : "other");
+	  jt_block_holders (tb, extra + n, sizeof extra - n);
+	}
+      trace_event (tb, "store write", (const char *) buf + i, extra);
+    }
   pthread_mutex_unlock (&log_lock);
   *amount = len;
   return 0;
@@ -615,6 +628,8 @@ static struct
   char what[40];
   long v0, v1;
   uint32_t hash;
+  /* Home writes: who wrote, and the journal's buffers of the block.  */
+  char extra[160];
 } trace_ring[TRACE_LEN];
 static unsigned long trace_next;
 static pthread_mutex_t trace_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -631,6 +646,13 @@ half_version (const void *data, block_t b, int half)
 
 void
 jt_trace (block_t b, const char *what, const void *data)
+{
+  trace_event (b, what, data, NULL);
+}
+
+static void
+trace_event (block_t b, const char *what, const void *data,
+	     const char *extra)
 {
   /* DATA can be a mapping whose read faults, which needs a pager thread
      that can be tracing: read it before taking the lock.  */
@@ -649,6 +671,8 @@ jt_trace (block_t b, const char *what, const void *data)
   trace_ring[n % TRACE_LEN].v0 = v0;
   trace_ring[n % TRACE_LEN].v1 = v1;
   trace_ring[n % TRACE_LEN].hash = data ? h : 0;
+  snprintf (trace_ring[n % TRACE_LEN].extra,
+	    sizeof trace_ring[0].extra, "%s", extra ? extra : "");
   pthread_mutex_unlock (&trace_lock);
 }
 
@@ -677,10 +701,12 @@ trace_dump (block_t b)
 	if (trace_ring[n % TRACE_LEN].v0 == -2)
 	  fprintf (stderr, "  %8lu  %s\n", n, trace_ring[n % TRACE_LEN].what);
 	else
-	  fprintf (stderr, "  %8lu  %-38s v%ld/v%ld #%08x\n", n,
+	  fprintf (stderr, "  %8lu  %-38s v%ld/v%ld #%08x%s%s\n", n,
 		   trace_ring[n % TRACE_LEN].what,
 		   trace_ring[n % TRACE_LEN].v0, trace_ring[n % TRACE_LEN].v1,
-		   trace_ring[n % TRACE_LEN].hash);
+		   trace_ring[n % TRACE_LEN].hash,
+		   trace_ring[n % TRACE_LEN].extra[0] ? "  " : "",
+		   trace_ring[n % TRACE_LEN].extra);
       }
   pthread_mutex_unlock (&trace_lock);
 }

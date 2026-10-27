@@ -226,6 +226,9 @@ void jt_dump_log (FILE *f, size_t from, size_t to);
 /* The journal's view of its log: head, tail, free space and its
    transactions, for a report.  */
 void jt_journal_state (FILE *f);
+/* The journal's buffers of block B, for a trace event (see
+   journal_peek.c).  */
+void jt_block_holders (block_t b, char *out, size_t len);
 
 /* Write the image as it was after the first N log entries to PATH: the
    image as loaded plus those writes.  With TORN, the Nth write only
