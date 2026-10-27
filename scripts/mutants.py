@@ -286,6 +286,14 @@ MUTANTS = [
             "t_ioerr", ["jsb-anchor"],
             why="a commit recovery cannot see goes home when the superblock "
             "that makes it seen fails"),
+    Mutant ("flush-over-ckpt", J,
+            """      while (jb->needs_flush
+	     && journal_older_copy_flushing_locked (journal, jb->jb_blocknr))
+	JOURNAL_WAIT (&journal->j_flush_wait, journal);""",
+            "",
+            "t_flush_order",
+            why="a commit's flush writes its copy home while a checkpoint is "
+            "writing an older one, which lands over it"),
     # A pager's home write that fails (t_ioerr pager, pager-run).
     Mutant ("pager-fail-stale", J,
             """      if (newest && !newest->jb_is_written)

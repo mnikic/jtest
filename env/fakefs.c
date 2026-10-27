@@ -220,6 +220,53 @@ static int disk_log_live;
    overwrites a block a replay still needs lands on the tail the disk
    has.  The journal must write a superblock with a later tail first.
    Called with log_lock held, before the write.  */
+/* jt_check_home_order: the version of each block written home last.  */
+int jt_check_home_order;
+static uint32_t *home_version;
+
+static long half_version (const void *data, block_t b, int half);
+static void trace_dump (block_t b);
+
+/* With jt_check_home_order, a test whose blocks only ever get newer
+   versions, none freed: no home write may hold an older version of a
+   block than one written home before it.  If one does, an old copy went
+   home over a newer one, and the newer is lost for good once the log
+   moves past it.  Stop there, with the block's history and who held it.
+   Called with log_lock held, before the write.  */
+static void
+check_home_order (uint64_t off, const void *buf, size_t len)
+{
+  if (!jt_check_home_order || !in_journal)
+    return;
+  if (!home_version)
+    home_version = calloc (jt_nblocks (), sizeof *home_version);
+  for (size_t i = 0; i < len; i += block_size)
+    {
+      block_t b = (off + i) >> log2_block_size;
+      const char *d = (const char *) buf + i;
+      long v0 = half_version (d, b, 0), v1 = half_version (d, b, 1);
+      if (b >= jt_nblocks () || in_journal[b] || v0 <= 0 || v0 != v1)
+	continue;
+      if ((uint32_t) v0 < home_version[b])
+	{
+	  char extra[160];
+	  int n = snprintf (extra, sizeof extra, "by %s:",
+			    jt_on_pager_thread () ? "pager"
+			    : jt_checkpointing () ? "ckpt" : "other");
+	  jt_block_holders (b, extra + n, sizeof extra - n);
+	  trace_event (b, "store write OLDER than home", d, extra);
+	  fprintf (stderr, "jtest: block %u: version %ld written home over "
+		   "version %u (write %zu)\n", b, v0, home_version[b], log_n);
+	  trace_dump (b);
+	  jt_journal_state (stderr);
+	  gdb_backtraces ();
+	  _ext2_panic (__func__, "block %u: version %ld went home after "
+		       "version %u", b, v0, home_version[b]);
+	}
+      home_version[b] = v0;
+    }
+}
+
 static void
 check_log_tail (uint64_t off, const void *buf, size_t len)
 {
@@ -305,6 +352,7 @@ store_write (struct store *s, store_offset_t addr, const void *buf,
     }
   pthread_mutex_lock (&log_lock);
   check_log_tail (off, buf, len);
+  check_home_order (off, buf, len);
   memcpy (store_mem + off, buf, len);
   log_append (off, buf, len);
   /* Home writes in the trace, with what they wrote: a checkpoint's go
@@ -2054,6 +2102,8 @@ jt_mount (const char *image, int npagers, int flags)
   jt_flags = flags;
   /* The log is empty: a journal that needs a replay is refused below.  */
   disk_log_start = 0;
+  free (home_version);
+  home_version = NULL;
   disk_log_live = 0;
   last_log_block = 0;
   /* The pagers protect and fault one 4096-byte block at a time.  */

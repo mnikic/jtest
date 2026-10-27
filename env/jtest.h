@@ -65,6 +65,10 @@ void jt_pageout (block_t b, int evict, int wait);
 /* An ext2_warning whose format contains this is not counted as one of
    jt_umount's warnings.  */
 extern const char *jt_expected_warning;
+/* Set by a test whose blocks only ever get newer versions (tests/
+   common.h's pattern), none freed: a home write of an older version than
+   one written home before stops the test (env/fakefs.c).  */
+extern int jt_check_home_order;
 
 /* Set one of the jt_*_hook pointers (or jt_on_release) while other
    threads may call it.  */
@@ -229,6 +233,8 @@ void jt_journal_state (FILE *f);
 /* The journal's buffers of block B, for a trace event (see
    journal_peek.c).  */
 void jt_block_holders (block_t b, char *out, size_t len);
+/* Checkpoint every transaction in the checkpoint list now.  */
+void jt_checkpoint_now (void);
 
 /* Write the image as it was after the first N log entries to PATH: the
    image as loaded plus those writes.  With TORN, the Nth write only

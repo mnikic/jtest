@@ -78,6 +78,7 @@ run (const char *image, unsigned seed)
   else if (umount_fail)
     fail_at = 1;
   JT_SET_HOOK (jt_store_fail_hook, fail_hook);
+  jt_check_home_order = 1;
   jt_mount (image, 2, 0);
   pick_free_blocks (blocks, NBLK);
   history_init (&h, blocks, NBLK, OPS);

@@ -231,3 +231,15 @@ jt_block_holders (block_t b, char *out, size_t len)
   pthread_mutex_unlock (&j->j_state_lock);
 }
 
+/* A checkpoint of every transaction in the checkpoint list, now, as
+   kjournald's or a forced one would run it.  */
+void
+jt_checkpoint_now (void)
+{
+  journal_t *j = ext2_journal;
+
+  JOURNAL_LOCK (j);
+  journal_flush_checkpoints_locked (j, UINT32_MAX, 0);
+  JOURNAL_UNLOCK (j);
+}
+

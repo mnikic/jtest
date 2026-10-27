@@ -25,3 +25,10 @@ race:ext2_getblk
 # under its lock.  t_rwcycle does what diskfs_set_readonly does; TSan saw
 # it on aarch64 only.
 race:diskfs_readonly
+
+# The harness labels a home write "ckpt" when a checkpoint is running
+# (jt_checkpointing in env/journal_peek.c), reading j_checkpointing
+# without the journal lock, which the store write must not take.  The
+# label is a hint for the trace and t_wrap's failing writes; a stale read
+# only mislabels one write.
+race:jt_checkpointing

@@ -22,6 +22,7 @@ main (int argc, char **argv)
   size_t checked;
 
   srand (argc > 2 ? atoi (argv[2]) : 1);
+  jt_check_home_order = 1;
   jt_mount (image, 2, 0);
   pick_free_blocks (blocks, NBLK);
   history_init (&h, blocks, NBLK, OPS);
