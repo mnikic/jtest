@@ -19,7 +19,9 @@ Each round:
   3. After a random delay (--min-kill to --max-kill seconds), kill -9's
      the translator, then the workload.
   4. Replays the journal as e2fsck does at boot (e2fsck -E journal_only
-     -y), then checks it read-only (e2fsck -fn), which must find nothing.
+     -y), then checks it read-only (e2fsck -fn), which must find nothing,
+     then marks it clean (e2fsck -fp), as the boot's fsck leaves it:
+     ext2fs mounts a filesystem not marked clean read-only.
 Every --clean-every rounds, the round ends with a clean unmount instead
 (settrans -g), and the same check.
 
@@ -190,6 +192,20 @@ def check (a, rnd, rdir):
         return "e2fsck -E journal_only exit %d" % r1.returncode
     if r2.returncode:
         return "e2fsck -fn exit %d after the replay" % r2.returncode
+    # As the boot's fsck leaves it: marked clean.  ext2fs mounts a
+    # filesystem not marked clean read-only.  -fn found nothing, so -p
+    # only marks it.
+    r3 = run (["e2fsck", "-fp", a.dev])
+    r4 = run (["dumpe2fs", "-h", a.dev])
+    with open (os.path.join (rdir, "fsck.txt"), "a") as f:
+        f.write ("# e2fsck -fp: exit %d\n%s\n" % (r3.returncode, r3.stdout))
+    if r3.returncode not in (0, 1):
+        return "e2fsck -fp exit %d after a clean e2fsck -fn" % r3.returncode
+    state = [l for l in r4.stdout.splitlines ()
+             if l.startswith ("Filesystem state:")]
+    if not state or "clean" not in state[0] or "not clean" in state[0]:
+        return "not marked clean after e2fsck -fp: %s" % (
+            state[0] if state else "no state in dumpe2fs -h")
     return None
 
 
