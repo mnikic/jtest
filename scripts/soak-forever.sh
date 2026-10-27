@@ -52,8 +52,13 @@ batch () {
     --seeds "$n" --from "$from" --parallel "$parallel" --points "$points" \
     --out "$dir" > "$out/last.log" 2>&1
   status=$?
-  line="$(date '+%F %T') $name seeds $from-$((from + n - 1)): $(tail -1 "$out/last.log")"
-  echo "$line" | tee -a "$summary"
+  # soak.py's count line, then a line per failed run.
+  count=$(grep -E "^[0-9]+ runs of " "$out/last.log" | tail -1)
+  [ -n "$count" ] || count="no summary (soak.py ended with status $status)"
+  echo "$(date '+%F %T') $name seeds $from-$((from + n - 1)): $count" \
+    | tee -a "$summary"
+  grep -E "^  t_[a-z_]+ seed [0-9]+:" "$out/last.log" | sed 's/^/    /' \
+    | tee -a "$summary"
   [ $status -eq 0 ] && rm -rf "$dir"
   from=$((from + n))
 }
