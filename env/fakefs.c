@@ -654,6 +654,10 @@ jt_trace (block_t b, const char *what, const void *data)
 
 static void trace_dump (block_t b);
 
+/* A trace event's name, marked when it is the disk cache's: its blocks
+   and the directory pager's are traced alike.  */
+#define CACHE_EVENT(c, what) ((c)->disk_cache ? "disk cache " what : what)
+
 void
 jt_trace_dump (block_t b)
 {
@@ -971,8 +975,8 @@ serve_pageout (struct cache *c, block_t b, int evict, int run)
       if (evict && c->resident[b])
 	{
 	  c->resident[b] = 0;
-	  if (!c->disk_cache)
-	    jt_trace (b, "evicted clean, not written", cslot (c, b));
+	  jt_trace (b, CACHE_EVENT (c, "evicted clean, not written"),
+		    cslot (c, b));
 	}
       pthread_mutex_unlock (&page_lock);
       free (buf);
@@ -1002,9 +1006,8 @@ serve_pageout (struct cache *c, block_t b, int evict, int run)
       if (evict)
 	c->resident[b + i] = 0;
       c->paging_out[b + i] = 1;
-      if (!c->disk_cache)
-	jt_trace (b + i, evict ? "page-out evict: copy"
-		  : "page-out clean: copy", buf + i * block_size);
+      jt_trace (b + i, evict ? CACHE_EVENT (c, "page-out evict: copy")
+		: CACHE_EVENT (c, "page-out clean: copy"), buf + i * block_size);
     }
   pthread_mutex_unlock (&page_lock);
 
@@ -1023,8 +1026,7 @@ serve_pageout (struct cache *c, block_t b, int evict, int run)
       int failed = err || amount < (i + 1) * block_size;
       if (failed && evict && !c->pagein_wait[bi])
 	c->invalid[bi] = 1;
-      if (!c->disk_cache)
-	jt_trace (bi, "page-out: written", NULL);
+      jt_trace (bi, CACHE_EVENT (c, "page-out: written"), NULL);
       c->paging_out[bi] = 0;
       if (c->pagein_wait[bi])
 	{
@@ -1087,8 +1089,7 @@ serve_pagein (struct cache *c, block_t b)
   pthread_mutex_lock (&page_lock);
   /* The slot still holds what was evicted, and nothing edits an evicted
      block: the journal must return exactly that.  */
-  if (!c->disk_cache)
-    jt_trace (b, "page-in: journal returned", buf);
+  jt_trace (b, CACHE_EVENT (c, "page-in: journal returned"), buf);
   if (c->discarded[b])
     c->discarded[b] = 0;
   else if (memcmp (buf, cslot (c, b), block_size))
@@ -1096,11 +1097,9 @@ serve_pagein (struct cache *c, block_t b)
       stale_reads++;
       ext2_warning ("jtest: STALE %s page-in of block %u%s", c->name, b,
 		    after_failure ? ", after its page-out failed" : "");
-      if (!c->disk_cache)
-	{
-	  jt_trace (b, "page-in: evicted bytes were", cslot (c, b));
-	  trace_dump (b);
-	}
+      jt_trace (b, CACHE_EVENT (c, "page-in: evicted bytes were"),
+		cslot (c, b));
+      trace_dump (b);
     }
   memcpy (cslot (c, b), buf, block_size);
   c->resident[b] = 1;
@@ -1195,8 +1194,7 @@ cache_edit (struct cache *c, block_t b, size_t off, const void *data,
     pthread_cond_wait (&page_out_done, &page_lock);
   memcpy (cslot (c, b) + off, data, len);
   c->dirty[b] = 1;
-  if (!c->disk_cache)
-    jt_trace (b, "edit: page now", cslot (c, b));
+  jt_trace (b, CACHE_EVENT (c, "edit: page now"), cslot (c, b));
   pthread_mutex_unlock (&page_lock);
 }
 
