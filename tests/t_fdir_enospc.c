@@ -153,7 +153,7 @@ main (int argc, char **argv)
   struct node *s = make_in (&rootd, "S", S_IFREG | 0644);
   for (int i = 0; i < NW; i++)
     {
-      char name[8];
+      char name[16];		/* Room for any int: W%d.  */
       snprintf (name, sizeof name, "W%d", i);
       open_dir (&w[i], make_in (&rootd, name, S_IFDIR | 0755), O_WRITE);
       snprintf (name, sizeof name, "F%d", i);
