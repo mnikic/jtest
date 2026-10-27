@@ -276,6 +276,16 @@ MUTANTS = [
             "",
             "t_run_claims", ["committed"],
             why="a run stops at a block whose commit is on disk"),
+    # The superblock of a commit into an empty log (t_ioerr jsb-anchor).
+    Mutant ("anchor-failure-ignored", J,
+            """	  /* Recovery would not see TXN: it must not commit.  */
+	  JRNL_LOG_WARN ("Failed to update superblock. %s", strerror (err));
+	  JOURNAL_UNLOCK (journal);
+	  goto abort_commit;""",
+            """	  JRNL_LOG_WARN ("Failed to update superblock. %s", strerror (err));""",
+            "t_ioerr", ["jsb-anchor"],
+            why="a commit recovery cannot see goes home when the superblock "
+            "that makes it seen fails"),
     # A pager's home write that fails (t_ioerr pager, pager-run).
     Mutant ("pager-fail-stale", J,
             """      if (newest && !newest->jb_is_written)

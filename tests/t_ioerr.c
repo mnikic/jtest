@@ -5,6 +5,9 @@
 		 commit record nor the journal superblock
      commit      a commit record
      jsb         the journal superblock
+     jsb-anchor  the journal superblock a commit into an empty log
+		 writes, before the commit is durable: recovery would
+		 not see the commit, which must then fail
      checkpoint  a home write by the journal: the flush after a commit,
 		 as this test's log never fills (t_wrap fails the
 		 checkpoint's)
@@ -20,7 +23,8 @@
    returned.  By default the run covers every kind, each in a process
    of its own.
 
-   log-data and commit abort a commit.  The journal must then stop: the
+   log-data and commit abort a commit, and so does jsb when the write
+   that fails is the superblock a commit into an empty log writes.  The journal must then stop: the
    file system goes read-only, every commit from then on returns the
    error, and the aborted transaction's shadows still serve reads (they
    are the only copy of pages the pager has evicted).  An operation whose
@@ -37,9 +41,14 @@
 
 #define NBLK 40
 #define OPS 200
+/* jsb: operations after OPS, while no superblock write has failed yet
+   (see run).  */
+#define JSB_EXTRA 100
 
 static const char *kind;
 static int matches, fail_at = 6, failed, aborts;
+/* jsb-anchor: the log start the disk's journal superblock has.  */
+static uint32_t disk_start;
 static size_t failed_at_log;
 
 static int
@@ -60,6 +69,18 @@ fail_hook (uint64_t off, size_t len, const void *buf)
     match = is_hdr && be32toh (w[1]) == JBD2_COMMIT_BLOCK;
   else if (!strcmp (kind, "jsb"))
     match = is_jsb;
+  else if (!strcmp (kind, "jsb-anchor"))
+    {
+      /* The superblock a commit into an empty log writes: the log start
+	 goes from 0 to the commit's.  */
+      uint32_t start = is_jsb && len >= sizeof (journal_superblock_t)
+	? be32toh (((const journal_superblock_t *) buf)->s_start) : 0;
+      match = is_jsb && start
+	&& __atomic_load_n (&disk_start, __ATOMIC_RELAXED) == 0;
+      if (is_jsb && !(match && __atomic_load_n (&matches, __ATOMIC_RELAXED)
+		      + 1 >= fail_at))
+	__atomic_store_n (&disk_start, start, __ATOMIC_RELAXED);
+    }
   else if (!strcmp (kind, "checkpoint"))
     match = !journal && !jt_on_pager_thread () && off >= 4096 * 16;
   else if (!strcmp (kind, "pager"))
@@ -118,7 +139,11 @@ run (const char *image, unsigned seed)
   static struct history h;
   unsigned long warnings, n_failed_commits = 0;
 
-  aborts = !strcmp (kind, "log-data") || !strcmp (kind, "commit");
+  aborts = !strcmp (kind, "log-data") || !strcmp (kind, "commit")
+    || !strcmp (kind, "jsb-anchor");
+  /* The log is empty only now and then: the second time.  */
+  if (!strcmp (kind, "jsb-anchor"))
+    fail_at = 2;
   /* Each commit writes many log blocks: fail one about as far in as the
      sixth commit record.  */
   if (!strcmp (kind, "log-data"))
@@ -133,10 +158,19 @@ run (const char *image, unsigned seed)
   srand (seed);
   jt_mount (image, 2, 0);
   pick_free_blocks (blocks, NBLK);
-  history_init (&h, blocks, NBLK, OPS);
+  history_init (&h, blocks, NBLK, OPS + JSB_EXTRA);
   JT_SET_HOOK (jt_store_fail_hook, fail_hook);
 
-  for (int op = 1; op <= OPS; op++)
+  /* The superblock is written when the tail moves, as page-outs and
+     checkpoints let transactions go, and how often depends on timing:
+     fewer times than fail_at in OPS operations on some machines.  Then
+     jsb goes on, each operation committed and the caches synced, which
+     writes their blocks home and moves the tail, until one fails.  */
+  int is_jsb = !strncmp (kind, "jsb", 3);
+  for (int op = 1;
+       op <= OPS || (is_jsb && op <= OPS + JSB_EXTRA
+		     && !__atomic_load_n (&failed, __ATOMIC_ACQUIRE));
+       op++)
     {
       diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
       /* After an abort, edit only the first half of the blocks: the
@@ -165,13 +199,21 @@ run (const char *image, unsigned seed)
 	  else
 	    jt_read (blocks[k], buf);
 	}
-      int sync = op % 5 == 0;
+      int extra = op > OPS;
+      int sync = op % 5 == 0 || extra;
       int was_failed = __atomic_load_n (&failed, __ATOMIC_ACQUIRE);
       error_t err = 0;
       if (sync)
 	err = jt_commit (txn);
       else
 	diskfs_journal_stop_transaction (txn);
+      /* A jsb write that failed was the superblock of a commit into an
+	 empty log, if the journal aborted: recovery would not see that
+	 commit, so it fails like a failed log write, here or in
+	 kjournald.  From then on the run is one of the aborts.  */
+      if (is_jsb && !aborts && __atomic_load_n (&failed, __ATOMIC_ACQUIRE)
+	  && journal_aborted ())
+	aborts = 1;
       /* Once the failed write is seen, the running transaction is after
 	 the aborted one.  */
       if (sync && aborts && was_failed)
@@ -182,9 +224,19 @@ run (const char *image, unsigned seed)
       if (err)
 	n_failed_commits++;
       history_op_done (&h, sync && !err);
+      if (extra)
+	{
+	  jt_sync_all ();
+	  /* kjournald writes the tail the sync moved.  */
+	  usleep (20000);
+	}
       if (rand () % 3 == 0)
 	op_pageout (rand () % (no_dirs ? NBLK - NDIR : NBLK), rand () % 2);
     }
+
+  if (is_jsb && !aborts && __atomic_load_n (&failed, __ATOMIC_ACQUIRE)
+      && journal_aborted ())
+    aborts = 1;
 
   /* Every claim a home write made is released, written or not.  */
   long claims;
@@ -247,7 +299,7 @@ main (int argc, char **argv)
   unsigned seed = argc > 2 ? atoi (argv[2]) : 1;
   static const char *const all[] =
     { "jsb", "pager", "pager-run", "checkpoint", "log-data", "commit",
-      NULL };
+      "jsb-anchor", NULL };
   static const char *const no_aborts[] =
     { "jsb", "pager", "pager-run", "checkpoint", NULL };
   const char *one[] = { argc > 3 ? argv[3] : NULL, NULL };
