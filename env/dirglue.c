@@ -40,10 +40,12 @@ fshelp_access (io_statbuf_t *st, int op, struct iouser *user)
   return 0;
 }
 
+error_t (*jt_checkdirmod_hook) (io_statbuf_t *dir, io_statbuf_t *st);
+
 error_t
 fshelp_checkdirmod (io_statbuf_t *dir, io_statbuf_t *st,
 		    struct iouser *user)
 {
-  (void) dir; (void) st; (void) user;
-  return 0;
+  (void) user;
+  return jt_checkdirmod_hook ? jt_checkdirmod_hook (dir, st) : 0;
 }

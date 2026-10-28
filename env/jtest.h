@@ -169,6 +169,9 @@ extern void (*jt_norefs_hook) (struct node *np);
    test to print what it knows (not async-signal-safe; the test is stuck
    anyway).  */
 extern void (*jt_deadlock_hook) (void);
+/* env/dirglue.c: if set, fshelp_checkdirmod's answer, for a test to
+   refuse changes to a directory (EACCES) as for another user.  */
+extern error_t (*jt_checkdirmod_hook) (io_statbuf_t *dir, io_statbuf_t *st);
 void jt_set_keeps_page (int keeps);
 
 /* env/fpager.c, a file pager for nodes, where it is linked in.  Write

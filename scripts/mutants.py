@@ -496,6 +496,29 @@ MUTANTS = [
             """      err = diskfs_direnter (tdp, toname, fnp, ds, tocred);""",
             "t_fdir_renfail",
             why="a failed direnter's mapping is unmapped twice"),
+    # A rename of a directory that fails before it has locked the
+    # directory being moved (t_fdir_renerr).
+    Mutant ("rename-lookup-err-unlocks-fnp", "libdiskfs/dir-renamed.c",
+            """  if (err && err != ENOENT)
+    {
+      fnp = NULL;
+      goto out;
+    }""",
+            """  if (err && err != ENOENT)
+    {
+      goto out;
+    }""",
+            "t_fdir_renerr",
+            why="a failed target lookup unlocks the directory being moved"),
+    Mutant ("rename-excl-unlocks-fnp", "libdiskfs/dir-renamed.c",
+            """      err = EEXIST;
+      fnp = NULL;
+      goto out;""",
+            """      err = EEXIST;
+      goto out;""",
+            "t_fdir_renerr",
+            why="an existing target with EXCL unlocks the directory being "
+            "moved"),
     # libdiskfs's renames and entries (t_fdir_renlock, t_fdir_ren,
     # t_fdir_dead).
     Mutant ("rename-bottom-up", "libdiskfs/dir-renamed.c",
