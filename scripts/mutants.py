@@ -271,8 +271,9 @@ MUTANTS = [
 	{
 	  /* It stopped, with nothing left in it: the rest goes home as
 	     without a journal.  */""",
-            "t_run_claims", ["stop"],
-            why="a run goes on with a journal that stopped during its write"),
+            "t_run_claims", ["kept"],
+            why="a run goes on with a journal that stopped during its write, "
+            "and a block of it goes into a transaction that never commits"),
     Mutant ("run-committed-hazard", J,
             """  /* If commit crossed WAL barrier, it's safe to coalesce and write */
   if (commit && commit->t_state == T_COMMITTED)

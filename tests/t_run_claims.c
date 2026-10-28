@@ -6,7 +6,7 @@
    write it home.  Every claim must be given up once the write is done,
    or a checkpoint waits for it forever.
 
-   Four cases, forced, each in a process of its own:
+   Five cases, forced, each in a process of its own:
 
    committed: T holds directory blocks D0 and D1, and disk cache block
       X, whose page-out T took into its shadow.  T commits; the flush
@@ -28,6 +28,12 @@
       home.  The run then finds the journal gone, and writes D1 home as
       without a journal (journal_store_write).
 
+   kept: as stop, but D1's transaction cannot commit: a handle stays
+      open on it while another thread commits it, so the stop's quiesce
+      times out and keeps the journal, D1 still in the committing
+      transaction.  The run must write D1 home all the same: taken into
+      that transaction's shadow, it would never get there.
+
    fail: T holds D0, D1 and D2 and commits, none of them home; then the
       running transaction T2 holds D1 at version 2.  A page-out of the
       run D0-D2 fails at D0's write, so the pager loses all three pages.
@@ -45,9 +51,9 @@
 
 #include "common.h"
 
-enum { COMMITTED, CHECKPOINT, STOP, FAIL, NMODES };
+enum { COMMITTED, CHECKPOINT, STOP, FAIL, KEPT, NMODES };
 static const char *const mode_names[NMODES] = { "committed", "checkpoint",
-						"stop", "fail" };
+						"stop", "fail", "kept" };
 static int mode;
 
 #define NRUN 3
@@ -378,6 +384,94 @@ run_stop (void)
 	 "the page-out did not write D1 home once the journal stopped");
 }
 
+/* For KEPT: the handle left open on D1's transaction, and the commit
+   that waits for it.  */
+static pthread_mutex_t kept_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t kept_cond = PTHREAD_COND_INITIALIZER;
+static diskfs_transaction_t *kept_txn;
+static int kept_close;
+
+static void *
+kept_holder (void *arg)
+{
+  (void) arg;
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
+  dir_version (txn, d[1], 1);
+  pthread_mutex_lock (&kept_lock);
+  kept_txn = txn;
+  pthread_cond_broadcast (&kept_cond);
+  while (!kept_close)
+    pthread_cond_wait (&kept_cond, &kept_lock);
+  pthread_mutex_unlock (&kept_lock);
+  diskfs_journal_stop_transaction (txn);
+  return NULL;
+}
+
+/* Waits for the holder's handle for good: the stop gives up on the
+   transaction, and the handle's end no longer reaches it.  */
+static void *
+kept_committer (void *arg)
+{
+  (void) arg;
+  diskfs_journal_commit_transaction (diskfs_journal_start_transaction ());
+  return NULL;
+}
+
+static void
+run_kept (void)
+{
+  char buf[block_size];
+  pthread_t h, c, s;
+
+  run_need = 2;
+  jt_expected_warning = "Quiesce timed out";
+  /* D0: dirty, in no transaction.  */
+  pattern (buf, d[0], 1);
+  jt_dir_edit (d[0], 0, buf, block_size);
+  /* D1: in the running transaction, its handle open.  */
+  pthread_create (&h, NULL, kept_holder, NULL);
+  pthread_mutex_lock (&kept_lock);
+  while (!kept_txn)
+    pthread_cond_wait (&kept_cond, &kept_lock);
+  pthread_mutex_unlock (&kept_lock);
+
+  pthread_mutex_lock (&hold_lock);
+  __atomic_store_n (&hold_blk, d[0], __ATOMIC_RELEASE);
+  hold_armed = 1;
+  pthread_mutex_unlock (&hold_lock);
+  jt_dir_pageout_run (d[0], 2, 1, 0);
+  wait_hold ();
+
+  pthread_create (&c, NULL, kept_committer, NULL);
+  pthread_detach (c);
+  for (int i = 0; i < 3000 && !jt_txn_locked (kept_txn); i++)
+    usleep (10000);
+  CHECK (jt_txn_locked (kept_txn), "D1's transaction never started to "
+	 "commit");
+
+  pthread_create (&s, NULL, stopper, NULL);
+  for (int i = 0; i < 3000 && __atomic_load_n (&ext2_journal,
+					       __ATOMIC_ACQUIRE); i++)
+    usleep (10000);
+  CHECK (!__atomic_load_n (&ext2_journal, __ATOMIC_ACQUIRE),
+	 "the journal did not stop while a handle was open");
+
+  release_hold ();
+  jt_drain ();
+  pthread_join (s, NULL);
+  CHECK (__atomic_load_n (&d1_by_pager, __ATOMIC_ACQUIRE),
+	 "the page-out did not write D1 home once the journal stopped with "
+	 "D1's transaction kept");
+  /* Nothing committed: the home check after the unmount is all.  */
+  add_need (1, 0);
+
+  pthread_mutex_lock (&kept_lock);
+  kept_close = 1;
+  pthread_cond_broadcast (&kept_cond);
+  pthread_mutex_unlock (&kept_lock);
+  pthread_join (h, NULL);
+}
+
 static int
 run (const char *image)
 {
@@ -398,6 +492,8 @@ run (const char *image)
     run_checkpoint ();
   else if (mode == STOP)
     run_stop ();
+  else if (mode == KEPT)
+    run_kept ();
   else
     run_fail ();
 
