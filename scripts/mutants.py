@@ -117,16 +117,18 @@ MUTANTS = [
             "t_crash",
             why="a commit into an empty log is durable before s_start is"),
     Mutant ("free-only-commit", J,
-            """  if (txn->t_buffer_map.size == 0 && !txn->t_freed_blocks
-      && txn->t_revoke_map.size == 0)""",
-            """  if (txn->t_buffer_map.size == 0)""",
+            """  if (txn->t_buffer_map.size || txn->t_freed_blocks
+      || txn->t_revoke_map.size)
+    return 0;""",
+            """  if (txn->t_buffer_map.size)
+    return 0;""",
             "t_free_only",
             why="a transaction that only frees is never committed"),
     Mutant ("notify-committed", J,
             """  if (commit && commit->t_state == T_COMMITTED)
-    journal_notify_txn_locked (commit, start_block, n_blocks);""",
+    journal_notify_txn_locked (journal, commit, start_block, n_blocks);""",
             """  if (commit)
-    journal_notify_txn_locked (commit, start_block, n_blocks);""",
+    journal_notify_txn_locked (journal, commit, start_block, n_blocks);""",
             "t_notify_race",
             why="a home write notifies a transaction still taking edits"),
     # The read-only switch (1d791e793 aside, which only ASan sees).
@@ -136,8 +138,10 @@ MUTANTS = [
             "t_rwcycle",
             why="a restarted journal reuses transaction numbers"),
     Mutant ("quiesce-checkpoints", J,
-            """    journal_flush_checkpoints_locked (ext2_journal, UINT32_MAX, 0);""",
-            """    0;""",
+            """  int io_error =
+    journal_flush_checkpoints_locked (journal, UINT32_MAX, 0);""",
+            """  int io_error =
+    0;""",
             "t_rwcycle",
             why="stopping the journal leaves blocks only in the log"),
     # A stopped journal's journal_t outlives it (cbb7243b3; 1d791e793,
@@ -236,7 +240,7 @@ MUTANTS = [
             why="a commit returns before its commit block is on disk"),
     # Failed home writes (jtest coverage gaps).
     Mutant ("run-claims-kept", J,
-            """	      journal_clear_flushing_locked (b + actual_blocks,
+            """	      journal_clear_flushing_locked (journal, b + actual_blocks,
 					     flush_count - actual_blocks);""",
             "",
             "t_ioerr", ["pager-run"],
@@ -303,10 +307,10 @@ MUTANTS = [
             why="after a failed page-out, a read gets the older block on "
             "disk instead of the journal's copy"),
     Mutant ("pager-run-abandoned", J,
-            """	  journal_clear_flushing_locked (b, 1);
-	  journal_keep_failed_blocks_locked (b, 1);
+            """	  journal_clear_flushing_locked (journal, b, 1);
+	  journal_keep_failed_blocks_locked (journal, b, 1);
 	  i++;""",
-            """	  journal_clear_flushing_locked (b, 1);
+            """	  journal_clear_flushing_locked (journal, b, 1);
 	  i++;""",
             "t_run_claims", ["fail"],
             why="the rest of a run whose write failed is dropped"),
@@ -326,7 +330,7 @@ MUTANTS = [
             "t_late_edit",
             why="the page goes into the shadow the commit is writing"),
     Mutant ("late-edit-dropped", J,
-            """	      if (run && !journal_get_write_access_locked (run, b, !external))""",
+            """	      if (run && !journal_get_write_access_locked (journal, run, b, !external))""",
             """	      if (0)""",
             "t_late_edit",
             why="the edit is not carried into the next transaction"),
@@ -356,8 +360,7 @@ MUTANTS = [
             "t_logpress",
             why="a transaction bigger than a forced checkpoint frees has no room"),
     Mutant ("wait-committed-frees", J,
-            """  else if (tid_gt (ext2_journal->j_last_committed_tid,
-		   ext2_journal->j_released_tid))""",
+            """  else if (tid_gt (journal->j_last_committed_tid, journal->j_released_tid))""",
             """  else if (0)""",
             "t_release_order",
             why="a wait for freed blocks gives up while a commit's are on the way"),
