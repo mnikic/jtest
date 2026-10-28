@@ -137,10 +137,13 @@ held_case (const char *what, struct protid *tocred, struct node *tdp,
 
   nlink_t u_links = u->dn_stat.st_nlink, tdp_links = tdp->dn_stat.st_nlink;
   /* diskfs_S_dir_rename's state at the call: a reference on D, not its
-     lock.  */
+     lock, and a journal handle (a synchronous mount writes U's inode in
+     the lookups).  */
   diskfs_nref (d);
+  diskfs_transaction_t *txn = diskfs_journal_start_transaction ();
   error_t err = diskfs_rename_dir (u, d, "D", tdp, toname, &cred_u, tocred,
 				   excl);
+  diskfs_journal_stop_transaction (txn);
   diskfs_nrele (d);
   CHECK (err == expect, "%s (held): the rename gave %s, not %s", what,
 	 err ? strerror (err) : "success", strerror (expect));
