@@ -123,8 +123,10 @@ static void
 txn_state (FILE *f, const char *what, diskfs_transaction_t *t)
 {
   fprintf (f, "  %s tid %u: log start %u, state %d, %zu blocks, "
-	   "%u outstanding\n", what, t->t_tid, t->t_log_start,
-	   (int) t->t_state, t->t_buffer_map.size, t->t_outstanding_io);
+	   "%u outstanding, %u handles, %zu revoked, %s\n", what, t->t_tid,
+	   t->t_log_start, (int) t->t_state, t->t_buffer_map.size,
+	   t->t_outstanding_io, t->t_active_threads, t->t_revoke_map.size,
+	   t->t_freed_blocks ? "frees" : "no frees");
 }
 
 /* What the journal thinks of its log, for a report.  Read without the
@@ -132,7 +134,15 @@ txn_state (FILE *f, const char *what, diskfs_transaction_t *t)
 void
 jt_journal_state (FILE *f)
 {
-  journal_t *j = ext2_journal;
+  jt_journal_state_of (f, ext2_journal);
+}
+
+/* The same for journal J, which may be one ext2_journal no longer
+   points to (a stop that kept it).  */
+void
+jt_journal_state_of (FILE *f, void *journal)
+{
+  journal_t *j = journal;
 
   if (!j)
     {

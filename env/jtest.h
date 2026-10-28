@@ -331,6 +331,8 @@ extern void (*jt_store_read_hook) (uint64_t off, size_t len);
 
 /* Record a journal that was started (see env/fakefs.c).  */
 void jt_journal_started (void *journal);
+/* jt_journal_state for a journal ext2_journal may no longer point to.  */
+void jt_journal_state_of (FILE *f, void *journal);
 
 /* With env/ext2glue.c: a real node for inode INO, from the disk cache,
    with no file pager.  */

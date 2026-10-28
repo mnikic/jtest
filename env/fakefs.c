@@ -73,6 +73,12 @@ const char *jt_expected_warning;
 /* ---------------------------------------------------------------- */
 /* Reporting.  */
 
+/* Every journal started.  A stopped journal's journal_t is kept for
+   readers still using it (journal_free_resources); keeping them here
+   too tells LeakSanitizer they are meant to stay.  */
+static void *journals[64];
+static int njournals;
+
 void
 ext2_warning (const char *fmt, ...)
 {
@@ -87,6 +93,9 @@ ext2_warning (const char *fmt, ...)
   vfprintf (stderr, fmt, ap);
   fputc ('\n', stderr);
   va_end (ap);
+  /* Which transaction a stop left, from the journal it kept.  */
+  if (strstr (fmt, "transactions left") && njournals)
+    jt_journal_state_of (stderr, journals[njournals - 1]);
 }
 
 void
@@ -402,12 +411,6 @@ store_read (struct store *s, store_offset_t addr, size_t amount,
   *len = amount;
   return 0;
 }
-
-/* Every journal started.  A stopped journal's journal_t is kept for
-   readers still using it (journal_free_resources); keeping them here
-   too tells LeakSanitizer they are meant to stay.  */
-static void *journals[64];
-static int njournals;
 
 void
 jt_journal_started (void *journal)
