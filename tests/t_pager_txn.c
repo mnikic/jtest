@@ -108,7 +108,12 @@ hold_hook (uint64_t off, size_t len, const void *data)
 {
   (void) len;
   (void) data;
-  if (!jt_in_journal (off))
+  /* A log write, which the commit makes with the journal lock dropped.
+     Not the journal superblock: kjournald writes it when the tail moves,
+     with the lock held, and holding that would keep every thread out of
+     the journal, the RPC below in diskfs_journal_start_transaction until
+     the commit is over.  */
+  if (!jt_in_journal (off) || jt_journal_index (off) == 0)
     return;
   pthread_mutex_lock (&hold_lock);
   if (hold_armed)

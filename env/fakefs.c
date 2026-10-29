@@ -1266,9 +1266,15 @@ cache_edit (struct cache *c, block_t b, size_t off, const void *data,
 {
   assert_backtrace (off + len <= block_size);
   pthread_mutex_lock (&page_lock);
-  fault_locked (c, b);
-  while (c->held[b])
-    pthread_cond_wait (&page_out_done, &page_lock);
+  /* As a write fault on Mach: one that waited for the page's write
+     faults again, since a page-out can evict it meanwhile.  */
+  for (;;)
+    {
+      fault_locked (c, b);
+      if (!c->held[b])
+	break;
+      pthread_cond_wait (&page_out_done, &page_lock);
+    }
   memcpy (cslot (c, b) + off, data, len);
   c->dirty[b] = 1;
   jt_trace (b, CACHE_EVENT (c, "edit: page now"), cslot (c, b));
