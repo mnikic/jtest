@@ -41,9 +41,9 @@
 
 #define NBLK 40
 #define OPS 200
-/* jsb: operations after OPS, while no superblock write has failed yet
-   (see run).  */
-#define JSB_EXTRA 100
+/* jsb and pager-run: operations after OPS, while no write of the kind
+   has failed yet (see run).  */
+#define EXTRA_OPS 100
 
 static const char *kind;
 static int matches, fail_at = 6, failed, aborts;
@@ -158,17 +158,22 @@ run (const char *image, unsigned seed)
   srand (seed);
   jt_mount (image, 2, 0);
   pick_free_blocks (blocks, NBLK);
-  history_init (&h, blocks, NBLK, OPS + JSB_EXTRA);
+  history_init (&h, blocks, NBLK, OPS + EXTRA_OPS);
   JT_SET_HOOK (jt_store_fail_hook, fail_hook);
 
   /* The superblock is written when the tail moves, as page-outs and
      checkpoints let transactions go, and how often depends on timing:
      fewer times than fail_at in OPS operations on some machines.  Then
      jsb goes on, each operation committed and the caches synced, which
-     writes their blocks home and moves the tail, until one fails.  */
+     writes their blocks home and moves the tail, until one fails.  So
+     does pager-run: a page-out of several pages goes home in pieces
+     while some of its blocks are in a transaction that takes edits, so
+     each operation there edits two neighbouring directory blocks,
+     commits them, and pages them out as one run.  */
   int is_jsb = !strncmp (kind, "jsb", 3);
+  int extend = is_jsb || !strcmp (kind, "pager-run");
   for (int op = 1;
-       op <= OPS || (is_jsb && op <= OPS + JSB_EXTRA
+       op <= OPS || (extend && op <= OPS + EXTRA_OPS
 		     && !__atomic_load_n (&failed, __ATOMIC_ACQUIRE));
        op++)
     {
@@ -201,6 +206,16 @@ run (const char *image, unsigned seed)
 	}
       int extra = op > OPS;
       int sync = op % 5 == 0 || extra;
+      int run_k = -1;
+      if (extra && !is_jsb)
+	for (int k = NBLK - NDIR; k + 1 < NBLK && run_k < 0; k++)
+	  if (blocks[k + 1] == blocks[k] + 1)
+	    run_k = k;
+      if (run_k >= 0)
+	{
+	  op_write (&h, txn, run_k);
+	  op_write (&h, txn, run_k + 1);
+	}
       int was_failed = __atomic_load_n (&failed, __ATOMIC_ACQUIRE);
       error_t err = 0;
       if (sync)
@@ -224,6 +239,8 @@ run (const char *image, unsigned seed)
       if (err)
 	n_failed_commits++;
       history_op_done (&h, sync && !err);
+      if (run_k >= 0 && !err)
+	jt_dir_pageout_run (blocks[run_k], 2, 0, 1);
       if (extra)
 	{
 	  jt_sync_all ();
