@@ -12,8 +12,9 @@
    committing, as fsyncs of other files would.  Between operations the
    file pager writes file data home.
 
-   A block that changes owner has its old page dropped (jt_discard), as
-   ext2_new_block and truncation do.
+   A metadata block's page is dropped before its free, waiting for a
+   write of it in flight, as ext2fs does; a block that changes owner has
+   its old pages dropped (jt_discard).
 
    What must hold: after a replay, the metadata is that of one operation,
    no older than any whose commit returned or whose frees were handed
@@ -171,6 +172,13 @@ free_block (diskfs_transaction_t *txn, int k, int op)
   if (now[k].role == DATA)
     /* Truncation drops the file's page.  */
     jt_discard (pool[k], 1);
+  else
+    /* ext2fs drops a metadata block's page before it frees the block,
+       and waits for a write of it in flight (truncate.c,
+       flush_global_ptr), which must not land once the block has a new
+       owner.  */
+    pager_flush_some (diskfs_disk_pager,
+		      (vm_address_t) pool[k] << log2_block_size, block_size, 1);
   CHECK (journal_record_freed_blocks (txn, pool[k], 1),
 	 "cannot record the free of block %u", pool[k]);
   pthread_mutex_lock (&alloc_lock);
