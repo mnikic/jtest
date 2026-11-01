@@ -1,7 +1,9 @@
 #!/bin/sh
 # Soak until stopped: every configuration in turn, each on seeds no batch
 # has run before, then again.  Meant for a machine left to it for hours
-# or days, in tmux or under nohup.
+# or days.  It ignores the hangup of the terminal it was started from,
+# so a dropped ssh connection does not stop it; its output then goes on
+# in soak/forever/summary.log only.
 #
 #   scripts/soak-forever.sh [-h HOURS] [-c CYCLES] [-f FROM] [-n SEEDS]
 #                           [-p PARALLEL]
@@ -35,6 +37,16 @@ cd "$(dirname "$0")/.." || exit 1
 out=soak/forever
 mkdir -p $out
 summary=$out/summary.log
+
+# A job started with & from an ssh shell gets SIGHUP when the connection
+# goes, and so do the jobs it starts.  Ignored here, it stays ignored in
+# make, soak.py and the tests.  INT, TERM and QUIT are noted in the
+# summary; a SIGKILL (the OOM killer) cannot be.
+trap '' HUP
+for sig in INT TERM QUIT; do
+  trap "echo \"\$(date '+%F %T') stopped by SIG$sig; next seed \$from\" \
+    >> \"\$summary\"; exit 1" $sig
+done
 san_seeds=$(( seeds / 5 > 0 ? seeds / 5 : 1 ))
 end=0
 [ "$hours" != 0 ] && end=$(( $(date +%s) + $(awk "BEGIN { printf \"%d\", $hours * 3600 }") ))
