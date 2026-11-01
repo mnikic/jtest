@@ -73,6 +73,8 @@ const char *jt_expected_warning;
 /* ---------------------------------------------------------------- */
 /* Reporting.  */
 
+static void gdb_backtraces (void);
+
 /* Every journal started.  A stopped journal's journal_t is kept for
    readers still using it (journal_free_resources); keeping them here
    too tells LeakSanitizer they are meant to stay.  */
@@ -121,6 +123,8 @@ _ext2_panic (const char *func, const char *fmt, ...)
   vfprintf (stderr, fmt, ap);
   fputc ('\n', stderr);
   va_end (ap);
+  jt_journal_state (stderr);
+  gdb_backtraces ();
   abort ();
 }
 
@@ -130,6 +134,8 @@ __assert_fail_backtrace (const char *assertion, const char *file,
 {
   fprintf (stderr, "%s:%u: %s: Assertion '%s' failed.\n",
 	   file, line, function, assertion);
+  jt_journal_state (stderr);
+  gdb_backtraces ();
   abort ();
 }
 
@@ -212,7 +218,6 @@ log_append (uint64_t off, const void *data, size_t len)
   log_entries[log_n++] = (struct jt_write) { off, len, copy };
 }
 
-static void gdb_backtraces (void);
 static void trace_event (block_t b, const char *what, const void *data,
 			 const char *extra);
 
@@ -2051,8 +2056,10 @@ static void
 gdb_backtraces (void)
 {
   const char *more = getenv ("JT_WATCHDOG_GDB");
+  static int taken;
 
-  if (!more)
+  /* Once: a store check takes them and then panics.  */
+  if (!more || __atomic_exchange_n (&taken, 1, __ATOMIC_ACQ_REL))
     return;
   prctl (PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
   /* JT_WATCHDOG_GDB other than 1: more gdb commands, as -ex
