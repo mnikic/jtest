@@ -60,7 +60,10 @@ make -s B=build/asan SAN=address,undefined all || exit 1
 batch () {
   build=$1 n=$2 points=$3 name=$4; shift 4
   dir=$out/$name-$from
-  env "$@" JT_WATCHDOG=300 python3 scripts/soak.py --build "$build" \
+  # On a hang or a failed store check, every thread's backtrace in the
+  # kept run's out.log (gdb, if it is installed).
+  env "$@" JT_WATCHDOG=300 JT_WATCHDOG_GDB=1 \
+    python3 scripts/soak.py --build "$build" \
     --seeds "$n" --from "$from" --parallel "$parallel" --points "$points" \
     --out "$dir" > "$out/last.log" 2>&1
   status=$?
