@@ -7,9 +7,6 @@
 int diskfs_link_max = EXT2_LINK_MAX;
 int diskfs_name_max = EXT2_NAME_LEN;
 
-/* libdiskfs's; the tests set it to the root.  */
-struct node *diskfs_root_node;
-
 /* No file change notifications, and no conch: a node's lock is all.  */
 void
 diskfs_notice_filechange (struct node *np, enum file_changed_type type,

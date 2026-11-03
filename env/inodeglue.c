@@ -18,6 +18,9 @@ unsigned long next_generation;
 int use_xattr_translator_records;
 int _diskfs_noatime;
 int _diskfs_relatime;
+/* libdiskfs's, read by inode.c's ext2_check_reload; the directory
+   tests set it to the root.  */
+struct node *diskfs_root_node;
 static struct mapped_time_value mtime;
 volatile struct mapped_time_value *diskfs_mtime = &mtime;
 
