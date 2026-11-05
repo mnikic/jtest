@@ -3,7 +3,8 @@
 # has run before, then again.  Meant for a machine left to it for hours
 # or days.  It ignores the hangup of the terminal it was started from,
 # so a dropped ssh connection does not stop it; its output then goes on
-# in soak/forever/summary.log only.
+# in soak/forever/summary.log only.  One runs at a time: a second start
+# while one runs says so and exits.
 #
 #   scripts/soak-forever.sh [-h HOURS] [-c CYCLES] [-f FROM] [-n SEEDS]
 #                           [-p PARALLEL]
@@ -37,6 +38,18 @@ cd "$(dirname "$0")/.." || exit 1
 out=soak/forever
 mkdir -p $out
 summary=$out/summary.log
+
+# One at a time: two would share the batch directories, last.log, the
+# summary and the builds.  The lock is held, through descriptor 9, by
+# this shell and everything it starts, so it is free again only once the
+# last test of a stopped run has gone too.
+exec 9>"$out/lock"
+if ! flock -n 9; then
+  echo "soak-forever is already running (pid $(cat "$out/pid" 2>/dev/null))," \
+    "on $out" >&2
+  exit 1
+fi
+echo $$ > "$out/pid"
 
 # A job started with & from an ssh shell gets SIGHUP when the connection
 # goes, and so do the jobs it starts.  Ignored here, it stays ignored in
